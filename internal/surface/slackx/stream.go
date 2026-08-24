@@ -14,12 +14,23 @@ import (
 )
 
 // Slack's streaming methods render a message as it is written: prose types in,
-// and task_update chunks become task cards that carry their own status. The
-// card timeline is collapsed by default, so a finished turn shows the answer
-// with the steps folded behind a disclosure the reader opens if they care.
+// and task_update chunks become task cards that carry their own status. In
+// plan display mode every card is grouped into ONE plan block — a single
+// disclosure the reader opens if they care — rather than a timeline of
+// interleaved cards, so a fifty-step turn reads as one card and an answer, not
+// fifty cards and an answer.
 //
 // This is why the gateway no longer needs an activity cap or a transient mode:
 // both existed to keep a rewritten message short.
+
+// maxPlanTasks is Slack's cap on tasks in a plan block. One slot is reserved
+// for the overflow card that absorbs everything past the cap, because a chunk
+// that exceeds the cap fails the whole append and would demote the turn to the
+// fallback path mid-flight.
+const maxPlanTasks = 50
+
+// overflowID is the shared task id every step past the cap collapses into.
+const overflowID = "overflow"
 
 // errStreamUnsupported is returned once the workspace has told us streaming is
 // not available to this app, so the gateway stops asking.
@@ -64,7 +75,7 @@ func (s *Surface) OpenStream(ctx context.Context, p surface.Post) (surface.Strea
 
 	opts := []slack.MsgOption{
 		slack.MsgOptionTS(p.Thread),
-		slack.MsgOptionTaskDisplayMode(slack.TaskDisplayModeTimeline),
+		slack.MsgOptionTaskDisplayMode(slack.TaskDisplayModePlan),
 	}
 	if p.User != "" {
 		opts = append(opts, slack.MsgOptionRecipientUserID(p.User))
@@ -84,9 +95,13 @@ func (s *Surface) OpenStream(ctx context.Context, p surface.Post) (surface.Strea
 		return nil, fmt.Errorf("slack: start stream: %w", err)
 	}
 	return &stream{
-		srf:     s,
-		ref:     surface.Ref{Channel: channel, Thread: p.Thread, ID: ts},
-		persona: p.Persona,
+		srf:      s,
+		ref:      surface.Ref{Channel: channel, Thread: p.Thread, ID: ts},
+		persona:  p.Persona,
+		opened:   time.Now(),
+		slots:    map[string]bool{},
+		status:   map[string]surface.StepStatus{},
+		overflow: map[string]surface.StepStatus{},
 	}, nil
 }
 
@@ -94,22 +109,34 @@ type stream struct {
 	srf     *Surface
 	ref     surface.Ref
 	persona surface.Persona
+	opened  time.Time
 
 	mu     sync.Mutex
 	closed bool
+	// slots holds the step ids that own a task card of their own; once
+	// maxPlanTasks-1 are taken, new ids collapse into the overflow card.
+	slots map[string]bool
+	// status is the last status seen per step id, overflow included, for the
+	// closing plan title's counts.
+	status map[string]surface.StepStatus
+	// overflow is the same, for only the steps living in the overflow card,
+	// whose displayed status is their aggregate.
+	overflow map[string]surface.StepStatus
+	// titled records that the plan has been given its provisional title.
+	titled bool
 }
 
 func (st *stream) Ref() surface.Ref { return st.ref }
 
 func (st *stream) Append(ctx context.Context, u surface.StreamUpdate) error {
-	chunks := chunksFor(u)
-	if len(chunks) == 0 {
-		return nil
-	}
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if st.closed {
 		return errors.New("slack: stream already closed")
+	}
+	chunks := st.chunksLocked(u)
+	if len(chunks) == 0 {
+		return nil
 	}
 	_, _, err := st.srf.api.AppendStreamContext(ctx, st.ref.Channel, st.ref.ID,
 		slack.MsgOptionChunks(chunks...))
@@ -127,8 +154,12 @@ func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
 	}
 	st.closed = true
 
+	chunks := st.chunksLocked(u)
+	if title := st.finalTitleLocked(); title != "" {
+		chunks = append(chunks, slack.NewPlanUpdateChunk(title))
+	}
 	opts := []slack.MsgOption{}
-	if chunks := chunksFor(u); len(chunks) > 0 {
+	if len(chunks) > 0 {
 		opts = append(opts, slack.MsgOptionChunks(chunks...))
 	}
 	_, _, err := st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID, opts...)
@@ -138,11 +169,12 @@ func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
 	return nil
 }
 
-// chunksFor converts one update into the streaming protocol's chunks.
+// chunksLocked converts one update into the streaming protocol's chunks,
+// tracking plan state as it goes. Called under the lock.
 //
 // Text goes first: the prose that explains a step reads better above it, and
 // that is the order the harness produced them in.
-func chunksFor(u surface.StreamUpdate) []slack.StreamChunk {
+func (st *stream) chunksLocked(u surface.StreamUpdate) []slack.StreamChunk {
 	var chunks []slack.StreamChunk
 	// The streaming API takes markdown, not Slack's mrkdwn dialect, so the
 	// CommonMark the harness emits goes through untouched — unlike the
@@ -150,16 +182,91 @@ func chunksFor(u surface.StreamUpdate) []slack.StreamChunk {
 	if text := u.Text; text != "" {
 		chunks = append(chunks, slack.NewMarkdownTextChunk(text))
 	}
+	if len(u.Steps) > 0 && !st.titled {
+		// The plan needs a title before its first card; the closing one
+		// replaces it with the turn's summary.
+		st.titled = true
+		chunks = append(chunks, slack.NewPlanUpdateChunk("Working…"))
+	}
 	for _, step := range u.Steps {
+		st.status[step.ID] = step.Status
+		chunks = append(chunks, st.taskChunkLocked(step))
+	}
+	return chunks
+}
+
+// taskChunkLocked renders one step, giving it a card of its own while the plan
+// has room and folding it into the shared overflow card after that.
+func (st *stream) taskChunkLocked(step surface.Step) slack.TaskUpdateChunk {
+	if !st.slots[step.ID] && len(st.slots) < maxPlanTasks-1 {
+		st.slots[step.ID] = true
+	}
+	if st.slots[step.ID] {
 		chunk := slack.NewTaskUpdateChunk(step.ID, truncateTitle(step.Title))
 		chunk.Status = taskStatus(step.Status)
 		chunk.Details = detailFor(step)
 		if step.Output != "" {
 			chunk.Output = truncate(step.Output, 2000)
 		}
-		chunks = append(chunks, chunk)
+		return chunk
 	}
-	return chunks
+
+	// Past the cap. The overflow card's title counts what it holds, its detail
+	// shows the newest activity, and its status is the aggregate: failed if
+	// anything failed, running if anything still is. Full detail is in the
+	// audit log; a turn this long is skimmed, not read.
+	st.overflow[step.ID] = step.Status
+	var running, failed int
+	for _, status := range st.overflow {
+		switch status {
+		case surface.StepRunning:
+			running++
+		case surface.StepFailed:
+			failed++
+		}
+	}
+	chunk := slack.NewTaskUpdateChunk(overflowID,
+		fmt.Sprintf("…and %d more steps", len(st.overflow)))
+	switch {
+	case failed > 0:
+		chunk.Status = slack.TaskCardStatusError
+	case running > 0:
+		chunk.Status = slack.TaskCardStatusInProgress
+	default:
+		chunk.Status = slack.TaskCardStatusComplete
+	}
+	detail := step.Title
+	if step.Detail != "" {
+		detail += ": " + step.Detail
+	}
+	chunk.Details = truncate(detail, 2000)
+	return chunk
+}
+
+// finalTitleLocked summarizes the finished plan: step count, failures, and how
+// long the turn ran. Empty when no steps were ever shown, since an untitled
+// plan that never existed needs no title. Called under the lock.
+func (st *stream) finalTitleLocked() string {
+	if !st.titled {
+		return ""
+	}
+	var failed int
+	for _, status := range st.status {
+		if status == surface.StepFailed {
+			failed++
+		}
+	}
+	title := fmt.Sprintf("%d steps", len(st.status))
+	if len(st.status) == 1 {
+		title = "1 step"
+	}
+	if failed > 0 {
+		title += fmt.Sprintf(" · %d failed", failed)
+	}
+	if took := time.Since(st.opened).Round(time.Second); took > 0 {
+		title += " · " + took.String()
+	}
+	return title
 }
 
 func taskStatus(s surface.StepStatus) slack.TaskCardStatus {

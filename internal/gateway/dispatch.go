@@ -22,6 +22,8 @@ func (g *Gateway) dispatch(ctx context.Context, c *Conn, f protocol.Frame) {
 		_ = c.Send(&protocol.Pong{Nonce: fr.Nonce})
 	case *protocol.TextDelta:
 		g.onTextDelta(fr)
+	case *protocol.Thought:
+		g.onThought(fr)
 	case *protocol.ToolStart:
 		g.onToolStart(fr)
 	case *protocol.ToolEnd:
@@ -61,6 +63,19 @@ func (g *Gateway) onTextDelta(fr *protocol.TextDelta) {
 		return
 	}
 	g.streamFor(turn).AppendText(fr.Text)
+}
+
+func (g *Gateway) onThought(fr *protocol.Thought) {
+	turn, ok := g.turnFor(fr.TurnID)
+	if !ok {
+		return
+	}
+	g.streamFor(turn).Thought(fr.Text)
+	_ = g.store.Log(store.Event{
+		Kind: "thought", Runner: turn.Runner, ThreadID: turn.ThreadID,
+		TurnID: fr.TurnID,
+		Detail: map[string]any{"text": fr.Text},
+	})
 }
 
 func (g *Gateway) onToolStart(fr *protocol.ToolStart) {

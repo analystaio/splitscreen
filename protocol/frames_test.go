@@ -29,6 +29,7 @@ func TestRoundTrip(t *testing.T) {
 			User: UserRef{ID: "U1", Display: "alice"}, Text: "hi",
 		}},
 		{"text.delta", DirUp, &TextDelta{ThreadID: "t1", TurnID: "turn1", Text: "wor"}},
+		{"thought", DirUp, &Thought{ThreadID: "t1", TurnID: "turn1", Text: "the disk is the suspect"}},
 		{"tool.start", DirUp, &ToolStart{TurnID: "turn1", CallID: "c1", Tool: "Bash"}},
 		{"tool.end", DirUp, &ToolEnd{TurnID: "turn1", CallID: "c1", OK: true, DurationMS: 12}},
 		{"permission.request", DirUp, &PermissionRequest{
@@ -96,7 +97,7 @@ func TestEveryKnownTypeIsRoundTripped(t *testing.T) {
 	// Guards against adding a frame type and forgetting to cover it.
 	covered := map[FrameType]bool{}
 	for _, ft := range []FrameType{
-		TypeHello, TypeHelloAck, TypeMessage, TypeTextDelta, TypeToolStart, TypeToolEnd,
+		TypeHello, TypeHelloAck, TypeMessage, TypeTextDelta, TypeThought, TypeToolStart, TypeToolEnd,
 		TypePermissionRequest, TypePermissionResponse, TypeMCPCall, TypeMCPResponse,
 		TypeCredentialRequest, TypeCredentialGrant, TypeUsage, TypeDone, TypeError,
 		TypeBlobBegin, TypeBlobEnd, TypePing, TypePong, TypeBundlePush,

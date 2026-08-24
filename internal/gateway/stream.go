@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,15 @@ type stream struct {
 	// delta a streaming surface appends; the fallback path resends the whole
 	// body every time and ignores it.
 	sent int
+	// pending is prose whose fate is not yet known. Text followed by more work
+	// was narration ("let me check the disk…") and demotes into a step; text
+	// still pending when the turn closes is the answer and lands in body. The
+	// distinction only exists because a streamed message cannot be unsent: once
+	// prose reaches the surface as the answer it is the answer forever.
+	pending strings.Builder
+	// synth numbers gateway-made steps (thoughts, demoted prose), which have no
+	// harness call id to use.
+	synth int
 
 	order   []string
 	steps   map[string]*surface.Step
@@ -84,15 +94,67 @@ func (s *stream) loop(interval time.Duration) {
 	}
 }
 
-// AppendText adds assistant output.
+// AppendText adds assistant output. It is held in pending rather than sent,
+// because whether it is narration or the answer is decided by what comes next.
 func (s *stream) AppendText(text string) {
 	if text == "" {
 		return
 	}
 	s.mu.Lock()
-	s.body.WriteString(text)
+	s.pending.WriteString(text)
 	s.dirty = true
 	s.mu.Unlock()
+}
+
+// demoteLocked turns pending prose into a finished step, called under the lock
+// whenever new work begins: prose followed by more work was narration, not the
+// answer. Callers that suppress steps must not call this — hidden activity
+// keeps all prose in pending, so nothing the model said is lost.
+func (s *stream) demoteLocked() {
+	text := strings.TrimSpace(s.pending.String())
+	s.pending.Reset()
+	if text == "" {
+		return
+	}
+	s.synth++
+	id := "prose-" + strconv.Itoa(s.synth)
+	title, detail := splitStepText(text)
+	s.order = append(s.order, id)
+	s.steps[id] = &surface.Step{ID: id, Title: title, Detail: detail, Status: surface.StepDone}
+	s.changed[id] = true
+	s.dirty = true
+}
+
+// Thought records a piece of the model's reasoning as a finished step.
+func (s *stream) Thought(text string) {
+	if s.turn.Activity == config.ActivityHidden {
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.demoteLocked()
+	s.synth++
+	id := "thought-" + strconv.Itoa(s.synth)
+	title, detail := splitStepText(text)
+	s.order = append(s.order, id)
+	s.steps[id] = &surface.Step{ID: id, Title: title, Detail: detail, Status: surface.StepDone}
+	s.changed[id] = true
+	s.dirty = true
+}
+
+// splitStepText shapes free text into a step: the first line carries as the
+// title, the rest folds into the detail. Both are bounded here because they
+// are progress indicators, not the transcript — the full text is in the audit
+// log.
+func splitStepText(text string) (title, detail string) {
+	title, detail, _ = strings.Cut(text, "\n")
+	title = truncateLine(title, 160)
+	detail = truncateLine(strings.Join(strings.Fields(detail), " "), 200)
+	return title, detail
 }
 
 // StartStep records a tool call beginning. The id is the harness's call id, so
@@ -103,6 +165,7 @@ func (s *stream) StartStep(id, title, detail string) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.demoteLocked()
 	if _, ok := s.steps[id]; !ok {
 		s.order = append(s.order, id)
 	}
@@ -149,6 +212,7 @@ func (s *stream) NoteStep(id, title string, failed bool) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.demoteLocked()
 	if _, ok := s.steps[id]; !ok {
 		s.order = append(s.order, id)
 	}
@@ -228,6 +292,11 @@ func (s *stream) flushWith(ctx context.Context, final bool) {
 	if (!s.dirty && !final) || s.closed {
 		s.mu.Unlock()
 		return
+	}
+	if final {
+		// Nothing else is coming, so whatever prose is pending is the answer.
+		s.body.WriteString(s.pending.String())
+		s.pending.Reset()
 	}
 	native, fellBack := s.native, s.fellBack
 	s.mu.Unlock()
@@ -404,5 +473,5 @@ func (s *stream) Close(ctx context.Context) {
 func (s *stream) HasOutput() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.body.Len() > 0 || len(s.order) > 0
+	return s.body.Len() > 0 || s.pending.Len() > 0 || len(s.order) > 0
 }

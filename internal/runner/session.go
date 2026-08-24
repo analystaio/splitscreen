@@ -251,6 +251,9 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 		case harness.EventText:
 			_ = r.send(ctx, &protocol.TextDelta{ThreadID: ts.threadID, TurnID: turn, Text: ev.Text})
 
+		case harness.EventThinking:
+			_ = r.send(ctx, &protocol.Thought{ThreadID: ts.threadID, TurnID: turn, Text: ev.Text})
+
 		case harness.EventSession:
 			ts.sessionMu.Lock()
 			ts.sessionID = ev.SessionID

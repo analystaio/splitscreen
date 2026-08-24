@@ -24,6 +24,7 @@ var registry = map[FrameType]func() Frame{
 	TypeCredentialRequest:  func() Frame { return new(CredentialRequest) },
 	TypeCredentialGrant:    func() Frame { return new(CredentialGrant) },
 	TypeTextDelta:          func() Frame { return new(TextDelta) },
+	TypeThought:            func() Frame { return new(Thought) },
 	TypeToolStart:          func() Frame { return new(ToolStart) },
 	TypeToolEnd:            func() Frame { return new(ToolEnd) },
 	TypeUsage:              func() Frame { return new(Usage) },

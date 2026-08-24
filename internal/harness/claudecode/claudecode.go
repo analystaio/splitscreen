@@ -247,11 +247,12 @@ type rawUsage struct {
 type assistantMessage struct {
 	Model   string `json:"model"`
 	Content []struct {
-		Type  string          `json:"type"`
-		Text  string          `json:"text"`
-		ID    string          `json:"id"`
-		Name  string          `json:"name"`
-		Input json.RawMessage `json:"input"`
+		Type     string          `json:"type"`
+		Text     string          `json:"text"`
+		Thinking string          `json:"thinking"`
+		ID       string          `json:"id"`
+		Name     string          `json:"name"`
+		Input    json.RawMessage `json:"input"`
 	} `json:"content"`
 	Usage *rawUsage `json:"usage"`
 }
@@ -304,6 +305,17 @@ func truncateResult(s string) string {
 	return s[:400] + "…"
 }
 
+// truncateThinking bounds a thinking block before it crosses the wire. A
+// thought is rendered as one step in a turn's progress, so anything past a
+// couple of sentences is weight the reader never sees.
+func truncateThinking(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= 1000 {
+		return s
+	}
+	return s[:1000] + "…"
+}
+
 func (s *session) readStdout(r io.Reader) {
 	defer close(s.events)
 	defer s.running.Store(false)
@@ -349,6 +361,11 @@ func (s *session) readStdout(r io.Reader) {
 				case "text":
 					if block.Text != "" {
 						s.emit(harness.Event{Kind: harness.EventText, Text: block.Text})
+					}
+				case "thinking":
+					// redacted_thinking carries no readable text and is skipped.
+					if t := truncateThinking(block.Thinking); t != "" {
+						s.emit(harness.Event{Kind: harness.EventThinking, Text: t})
 					}
 				case "tool_use":
 					s.toolN.Add(1)

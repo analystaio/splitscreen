@@ -179,6 +179,7 @@ rolling upgrade always has mismatched versions in flight.
 | ↓ | `mcp.response` | Result of a proxied MCP call |
 | ↓ | `credential.grant` | Ephemeral harness/forge credential, or a policy refusal |
 | ↑ | `text.delta` | Streaming assistant output |
+| ↑ | `thought` | A piece of the model's reasoning, rendered as a step |
 | ↑ | `tool.start` / `tool.end` | Tool lifecycle |
 | ↑ | `permission.request` | Agent wants to use a tool |
 | ↑ | `mcp.call` | Proxied MCP invocation |
@@ -253,18 +254,32 @@ still what decides *whether* one does (§7.1).
 
 A turn is one message that grows. What the gateway sends is a stream of increments:
 prose written since the last push, plus every **step** whose status changed. A step is a
-unit of work — a tool call, almost always — with an id, a title, a detail, and a status
-of running, done, or failed. `tool.start` and `tool.end` already carry all of it; the
-gateway adds no frames.
+unit of work with an id, a title, a detail, and a status of running, done, or failed.
+Three things become steps: a tool call (`tool.start` / `tool.end`), a piece of the
+model's reasoning (`thought`), and narration — prose the model wrote *before* going back
+to work. Narration is recognized by what follows it: text followed by another step was
+commentary ("let me check the disk…") and demotes into a finished step; text still
+unclaimed when the turn ends is the answer. The distinction has to be made
+gateway-side, because a streamed message cannot be unsent — once prose reaches the
+surface as the answer it is the answer forever. The cost is that the final response
+lands at the close of the turn rather than typing in, which the live step cards make
+acceptable. Under `show_activity: hidden` nothing demotes — steps are suppressed and
+every piece of prose survives into the final message.
 
 The gateway never decides how that looks. Surfaces take one of two paths:
 
 - **Native streaming.** A surface implementing `surface.Streamer` receives the deltas
-  and renders progress itself. Slack maps steps onto `chat.appendStream` task cards,
-  which show live status and collapse behind a disclosure when the turn ends. The reader
-  gets the answer, with the work behind a click.
+  and renders progress itself. Slack streams in **plan** display mode: every step
+  becomes a `task_update` chunk grouped into a single plan block — one expandable card
+  showing live status per step, titled "Working…" while the turn runs and re-titled
+  with the step count, failures, and elapsed time when it closes. The reader gets the
+  answer as prose below the card, with fifty steps of work behind one click rather
+  than fifty cards. Slack caps a plan at 50 tasks and rejects any append that exceeds
+  it, so the adapter reserves the last slot for an overflow card that counts everything
+  past the cap, shows the newest step, and aggregates status; the full record is in the
+  audit log.
 - **Post and edit.** Everything else gets one message rewritten on the flush interval,
-  with a tail of italic tool lines that are stripped when the answer lands.
+  with a tail of italic step lines that are stripped when the answer lands.
 
 The fallback is not vestigial: it is what runs when a workspace has not enabled
 streaming, when the API refuses, and when a stream breaks mid-turn. The last case is the

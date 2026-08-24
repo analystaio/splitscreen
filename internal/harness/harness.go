@@ -16,13 +16,17 @@ import (
 type EventKind string
 
 const (
-	EventText    EventKind = "text"
-	EventToolUse EventKind = "tool_use"
-	EventToolEnd EventKind = "tool_end"
-	EventUsage   EventKind = "usage"
-	EventSession EventKind = "session"
-	EventDone    EventKind = "done"
-	EventError   EventKind = "error"
+	EventText EventKind = "text"
+	// EventThinking is reasoning the model produced on the way to its answer.
+	// Separate from EventText because the two diverge at the surface: text is
+	// the answer, thinking is an intermediate step.
+	EventThinking EventKind = "thinking"
+	EventToolUse  EventKind = "tool_use"
+	EventToolEnd  EventKind = "tool_end"
+	EventUsage    EventKind = "usage"
+	EventSession  EventKind = "session"
+	EventDone     EventKind = "done"
+	EventError    EventKind = "error"
 )
 
 // Usage is normalized token accounting.

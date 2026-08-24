@@ -88,6 +88,34 @@ func TestParsesTextAndToolUse(t *testing.T) {
 	}
 }
 
+// Thinking blocks are reported as their own event kind, bounded, with
+// redacted thinking (which has no readable text) skipped entirely.
+func TestParsesThinking(t *testing.T) {
+	long := strings.Repeat("x", 1500)
+	stream := strings.Join([]string{
+		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"The disk is the suspect."}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"` + long + `"}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"redacted_thinking","data":"opaque"}]}}`,
+		`{"type":"result","session_id":"s1"}`,
+	}, "\n")
+
+	var thoughts []string
+	for _, ev := range collect(t, newParser(t, stream)) {
+		if ev.Kind == harness.EventThinking {
+			thoughts = append(thoughts, ev.Text)
+		}
+	}
+	if len(thoughts) != 2 {
+		t.Fatalf("expected 2 thinking events, got %d: %v", len(thoughts), thoughts)
+	}
+	if thoughts[0] != "The disk is the suspect." {
+		t.Errorf("thinking text = %q", thoughts[0])
+	}
+	if len(thoughts[1]) > 1010 || !strings.HasSuffix(thoughts[1], "…") {
+		t.Errorf("long thinking was not bounded: %d bytes", len(thoughts[1]))
+	}
+}
+
 // A result with no usage block must report usage as unknown, not as zeros.
 func TestMissingUsageIsUnknown(t *testing.T) {
 	s := newParser(t, `{"type":"result","session_id":"s1"}`)

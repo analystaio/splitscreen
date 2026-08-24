@@ -12,7 +12,7 @@ import (
 // mismatched versions in flight. Bump Major for any change that removes a
 // frame, removes a field, or changes the meaning of an existing field. Bump
 // Minor for additive changes (new frame types, new optional fields).
-const Version = "1.0"
+const Version = "1.1"
 
 // SemVer is a major.minor pair. The protocol deliberately has no patch
 // component: a change either affects the wire or it does not.

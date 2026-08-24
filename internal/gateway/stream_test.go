@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/avarant/splitscreen/config"
 	"github.com/avarant/splitscreen/internal/surface"
 	"github.com/avarant/splitscreen/protocol"
 )
@@ -143,10 +144,14 @@ func TestToolCallsStreamAsStepsWithALifecycle(t *testing.T) {
 		t.Fatalf("step never completed its lifecycle: %v", got)
 	}
 
-	// Prose is sent as deltas. Re-sending the whole body every tick would make
-	// the finished message a stack of duplicates.
-	if text := srf.streamedText(); text != "Checking. 52% used." {
-		t.Fatalf("text was not streamed as deltas: %q", text)
+	// Prose followed by a tool call was narration, not the answer: it demotes
+	// into a step, and only the text still unclaimed when the turn closes is
+	// streamed as the message body.
+	if !contains(got, "prose-1:done") {
+		t.Fatalf("narration before the tool call did not become a step: %v", got)
+	}
+	if text := srf.streamedText(); text != "52% used." {
+		t.Fatalf("only the final response should stream as text, got %q", text)
 	}
 
 	// Streaming replaces the message entirely: nothing goes through post/edit.
@@ -195,6 +200,85 @@ func TestFailedToolBecomesAFailedStep(t *testing.T) {
 		}
 	}
 	t.Fatal("the failure reached the surface without its reason")
+}
+
+// Thoughts are steps, and narration followed by more work demotes into one:
+// the reader gets a run of intermediate steps and only the final response as
+// prose.
+func TestThoughtsAndNarrationBecomeSteps(t *testing.T) {
+	h, srf := newStreamingHarness(t)
+	ws := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, ws)
+
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T1",
+		User: surface.User{ID: "U1"}, Addressed: true, Text: "think it over",
+	})
+	msg := readFrame[*protocol.Message](t, ws)
+
+	send(t, ws, &protocol.Thought{
+		ThreadID: msg.ThreadID, TurnID: msg.TurnID,
+		Text: "The disk is the likely culprit.\nUsage first, then inodes.",
+	})
+	send(t, ws, &protocol.TextDelta{ThreadID: msg.ThreadID, TurnID: msg.TurnID, Text: "Let me look."})
+	send(t, ws, &protocol.ToolStart{
+		ThreadID: msg.ThreadID, TurnID: msg.TurnID,
+		CallID: "c1", Tool: "Bash", Summary: "df -h",
+	})
+	send(t, ws, &protocol.ToolEnd{ThreadID: msg.ThreadID, TurnID: msg.TurnID, CallID: "c1", OK: true})
+	send(t, ws, &protocol.TextDelta{ThreadID: msg.ThreadID, TurnID: msg.TurnID, Text: "All clear."})
+	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: msg.TurnID})
+
+	eventually(t, "stream closed", func() bool {
+		srf.smu.Lock()
+		defer srf.smu.Unlock()
+		return len(srf.closes) == 1
+	})
+
+	got := srf.steps()
+	for _, want := range []string{"thought-1:done", "prose-2:done", "c1:done"} {
+		if !contains(got, want) {
+			t.Fatalf("missing step %q in %v", want, got)
+		}
+	}
+	if text := srf.streamedText(); text != "All clear." {
+		t.Fatalf("only the final response should stream as text, got %q", text)
+	}
+
+	// The thought's first line titles its step; the rest folds into the detail.
+	srf.smu.Lock()
+	defer srf.smu.Unlock()
+	for _, u := range append(append([]surface.StreamUpdate{}, srf.appends...), srf.closes...) {
+		for _, s := range u.Steps {
+			if s.ID == "thought-1" && s.Title == "The disk is the likely culprit." &&
+				s.Detail == "Usage first, then inodes." {
+				return
+			}
+		}
+	}
+	t.Fatal("the thought step did not carry its text as title and detail")
+}
+
+// Hidden activity suppresses steps, but it must not lose prose: with no step
+// to demote onto, narration stays pending and all of it lands as the answer.
+func TestHiddenActivityKeepsAllProse(t *testing.T) {
+	s := &stream{
+		turn:    &turnContext{Activity: config.ActivityHidden},
+		steps:   map[string]*surface.Step{},
+		changed: map[string]bool{},
+	}
+	s.AppendText("first. ")
+	s.Thought("private reasoning")
+	s.StartStep("c1", "Bash", "ls")
+	s.EndStep("c1", true, "", 5)
+	s.AppendText("second.")
+
+	if len(s.order) != 0 {
+		t.Fatalf("hidden activity still produced steps: %v", s.order)
+	}
+	if got := s.pending.String(); got != "first. second." {
+		t.Fatalf("prose was lost under hidden activity: %q", got)
+	}
 }
 
 // A surface that cannot stream must still get a whole message. The gateway

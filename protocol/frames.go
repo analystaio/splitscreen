@@ -27,6 +27,7 @@ const (
 
 	// Runner -> gateway.
 	TypeTextDelta         FrameType = "text.delta"
+	TypeThought           FrameType = "thought"
 	TypeToolStart         FrameType = "tool.start"
 	TypeToolEnd           FrameType = "tool.end"
 	TypePermissionRequest FrameType = "permission.request"
@@ -301,6 +302,25 @@ func (*TextDelta) Direction() Direction { return DirUp }
 func (t *TextDelta) Validate() error {
 	if t.TurnID == "" {
 		return errors.New("text.delta: turn is required")
+	}
+	return nil
+}
+
+// Thought is a piece of the model's reasoning, reported separately from
+// text.delta because the two have different fates: prose becomes the answer,
+// a thought is an intermediate step a surface may fold away or drop.
+type Thought struct {
+	ThreadID string `json:"thread"`
+	TurnID   string `json:"turn"`
+	Text     string `json:"text"`
+}
+
+func (*Thought) Type() FrameType      { return TypeThought }
+func (*Thought) Direction() Direction { return DirUp }
+
+func (t *Thought) Validate() error {
+	if t.TurnID == "" {
+		return errors.New("thought: turn is required")
 	}
 	return nil
 }
