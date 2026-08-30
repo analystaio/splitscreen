@@ -44,6 +44,12 @@ func (t *threadSession) setTurn(id string) {
 	t.turnMu.Unlock()
 }
 
+func (t *threadSession) touch() {
+	t.turnMu.Lock()
+	t.lastActivity = time.Now()
+	t.turnMu.Unlock()
+}
+
 func (t *threadSession) turn() string {
 	t.turnMu.RLock()
 	defer t.turnMu.RUnlock()
@@ -246,6 +252,11 @@ func (t *threadSession) send(ctx context.Context, in harness.Input) error {
 func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 	ctx := context.Background()
 	for ev := range sess.Events() {
+		// Every event counts as activity. Idle is measured from the last thing
+		// the harness did, not from when the turn started — otherwise a turn
+		// that outlives the idle timeout is reaped mid-flight while it is
+		// still streaming tool calls.
+		ts.touch()
 		turn := ts.turn()
 		switch ev.Kind {
 		case harness.EventText:

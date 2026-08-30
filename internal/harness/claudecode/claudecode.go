@@ -440,6 +440,12 @@ func (s *session) readStdout(r io.Reader) {
 	}
 
 	if err := s.cmd.Wait(); err != nil {
+		// Close() flips running before killing the process, so a false here
+		// means the exit was ordered from our side — reporting it would dress
+		// an idle reap or a !new up as a harness crash.
+		if !s.running.Load() {
+			return
+		}
 		s.mu.Lock()
 		stderr := strings.TrimSpace(s.stderrBuf.String())
 		s.mu.Unlock()
