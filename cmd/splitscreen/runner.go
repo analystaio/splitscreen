@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,7 @@ func runnerCmd() *cobra.Command {
 		harnessCred string
 		runtimeRoot string
 		idle        time.Duration
+		maxSessions int
 		logLevel    string
 	)
 
@@ -76,6 +78,7 @@ chat credentials, no forge credentials, and no routing configuration.`,
 				HarnessCredentials: harnessCred,
 				RuntimeRoot:        runtimeRoot,
 				IdleTimeout:        idle,
+				MaxSessions:        maxSessions,
 				Logger:             log,
 			})
 			if err != nil {
@@ -87,7 +90,7 @@ chat credentials, no forge credentials, and no routing configuration.`,
 
 			log.Info("runner starting",
 				"name", name, "gateway", gatewayURL, "cwd", cwd,
-				"harness", harnessName, "idle", idle)
+				"harness", harnessName, "idle", idle, "max_sessions", maxSessions)
 			return r.Run(ctx)
 		},
 	}
@@ -108,8 +111,24 @@ chat credentials, no forge credentials, and no routing configuration.`,
 			"(for subscription auth, where the credential is already on disk and refreshed in place)")
 	f.StringVar(&runtimeRoot, "runtime-root", "", "runtime directory; should be tmpfs (default /run/splitscreen)")
 	f.DurationVar(&idle, "idle", 30*time.Minute, "kill a session after this much silence; it resumes on the next message")
+	f.IntVar(&maxSessions, "max-sessions", envInt("SPLITSCREEN_MAX_SESSIONS", 0),
+		"cap on resident harness processes; at the cap the longest-idle session between turns is reaped, and if none exists the new session is refused (0 = unlimited)")
 	f.StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
 
 	_ = cmd.MarkFlagRequired("name")
 	return cmd
+}
+
+// envInt reads an integer environment variable, so a deployed unit file can
+// gain the setting without being edited.
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }

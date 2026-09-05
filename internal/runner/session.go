@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ type threadSession struct {
 	lastActivity time.Time
 	turnMu       sync.RWMutex
 	currentTurn  string
+	busy         bool
 
 	sendMu sync.Mutex
 }
@@ -40,8 +42,24 @@ type threadSession struct {
 func (t *threadSession) setTurn(id string) {
 	t.turnMu.Lock()
 	t.currentTurn = id
+	t.busy = true
 	t.lastActivity = time.Now()
 	t.turnMu.Unlock()
+}
+
+// endTurn marks the session as between turns. The turn id is kept so late
+// events (usage arriving after done) still attribute correctly.
+func (t *threadSession) endTurn() {
+	t.turnMu.Lock()
+	t.busy = false
+	t.lastActivity = time.Now()
+	t.turnMu.Unlock()
+}
+
+func (t *threadSession) isBusy() bool {
+	t.turnMu.RLock()
+	defer t.turnMu.RUnlock()
+	return t.busy
 }
 
 func (t *threadSession) touch() {
@@ -80,6 +98,10 @@ func (r *Runner) sessionFor(ctx context.Context, threadID string) (*threadSessio
 
 	if ts.sess != nil && ts.sess.Running() {
 		return ts, nil
+	}
+
+	if err := r.makeRoom(threadID); err != nil {
+		return nil, err
 	}
 
 	configDir := r.bundle.ConfigDir()
@@ -303,12 +325,14 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			}
 			sid := ts.sessionID
 			ts.sessionMu.Unlock()
+			ts.endTurn()
 			_ = r.send(ctx, &protocol.Done{
 				ThreadID: ts.threadID, TurnID: turn,
 				SessionID: sid, NumToolCalls: ev.ToolCalls,
 			})
 
 		case harness.EventError:
+			ts.endTurn()
 			_ = r.send(ctx, &protocol.Error{
 				ThreadID: ts.threadID, TurnID: turn,
 				Code: "harness_error", Message: ev.Error,
@@ -334,6 +358,84 @@ func (r *Runner) endSession(threadID string) {
 	// !new means start over, so drop the resume point too.
 	ts.sessionID = ""
 	ts.sessionMu.Unlock()
+}
+
+// makeRoom enforces MaxSessions before a new harness process starts.
+//
+// The cap exists because sessions are reaped by silence, not by count: enough
+// concurrent threads inside the idle window will exhaust the box no matter how
+// short the timeout is (thirteen resident sessions froze a 16 GB host solid).
+// Preference order: evict the longest-idle session that is between turns; a
+// session mid-turn is never killed — if every resident session is mid-turn,
+// the new one is refused instead, which surfaces in-thread as an error the
+// sender can retry, rather than as a dead machine.
+func (r *Runner) makeRoom(exclude string) error {
+	max := r.opts.MaxSessions
+	if max <= 0 {
+		return nil
+	}
+
+	type candidate struct {
+		ts   *threadSession
+		idle time.Duration
+	}
+	running := 0
+	var victims []candidate
+	r.sessions.Range(func(key, value any) bool {
+		ts := value.(*threadSession)
+		if key.(string) == exclude {
+			return true
+		}
+		// TryLock, not Lock: a session holding its own mutex is mid-start or
+		// mid-teardown. Treat it as resident but not evictable. A plain Lock
+		// here can deadlock against that session's own makeRoom.
+		if !ts.sessionMu.TryLock() {
+			running++
+			return true
+		}
+		alive := ts.sess != nil && ts.sess.Running()
+		ts.sessionMu.Unlock()
+		if !alive {
+			return true
+		}
+		running++
+		if !ts.isBusy() {
+			victims = append(victims, candidate{ts, ts.idle()})
+		}
+		return true
+	})
+
+	if running < max {
+		return nil
+	}
+
+	sort.Slice(victims, func(i, j int) bool { return victims[i].idle > victims[j].idle })
+	need := running - max + 1
+	for _, v := range victims {
+		if need == 0 {
+			break
+		}
+		if !v.ts.sessionMu.TryLock() {
+			continue
+		}
+		// Re-check under the lock: a message may have started a turn since the
+		// scan, and killing it mid-turn is the exact bug the idle reaper had.
+		if v.ts.isBusy() || v.ts.sess == nil || !v.ts.sess.Running() {
+			v.ts.sessionMu.Unlock()
+			continue
+		}
+		r.log.Info("reaping session to make room",
+			"thread", v.ts.threadID, "idle", v.ts.idle().Round(time.Second),
+			"resident", running, "max", max)
+		_ = v.ts.sess.Close()
+		v.ts.sess = nil
+		v.ts.sessionMu.Unlock()
+		need--
+	}
+	if need > 0 {
+		return fmt.Errorf("runner at capacity: %d sessions and all are mid-turn (max %d); wait for one to finish and resend", running, max)
+	}
+	return nil
 }
 
 // sweepIdle reaps sessions that have been quiet.

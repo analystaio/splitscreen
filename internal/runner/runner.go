@@ -49,6 +49,10 @@ type Options struct {
 	RuntimeRoot        string
 	SelfPath           string
 	IdleTimeout        time.Duration
+	// MaxSessions caps resident harness processes; 0 means unlimited. When a
+	// new session would exceed it, the longest-idle session between turns is
+	// reaped first, and the new session is refused if none is evictable.
+	MaxSessions int
 
 	Logger *slog.Logger
 }
