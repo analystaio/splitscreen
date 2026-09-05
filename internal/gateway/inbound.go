@@ -193,6 +193,14 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 	}
 
 	conn, online := g.hub.Get(runnerName)
+	// Hub membership is not liveness: a hung host leaves its connection half-
+	// open and the reaper takes up to five heartbeats to notice. Consulting the
+	// heartbeat state here means a message in that window queues instead of
+	// being written into a socket nothing is reading.
+	if online && conn.State(cfg.Gateway.Heartbeat.Duration()) == StateDisconnected {
+		conn.CloseWith("declared dead by dispatch: heartbeat silence")
+		online = false
+	}
 
 	// Attachments are streamed before the message so the runner has them on disk
 	// by the time it is asked to act.

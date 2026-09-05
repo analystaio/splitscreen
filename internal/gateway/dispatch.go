@@ -322,6 +322,46 @@ func (g *Gateway) failPendingFor(runner string) {
 	})
 }
 
+// reconcileTurns closes out a dropped runner's in-flight turns once it is
+// clear the runner is not coming right back.
+//
+// The grace period exists because a network blip is not a crash: sessions live
+// on the runner, and after a reconnect their events keep flowing under the
+// same turn ids, so failing turns at the instant of disconnect would bounce
+// work that is still happening. But past the grace window the turn can never
+// finish — either the host died with the work, or it rebooted and the harness
+// process is gone — and the alternative is what the dev3 hang produced: rows
+// stuck "running" forever and threads that just go silent. Better to say so
+// in-thread and let the sender decide when to retry.
+func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
+	time.Sleep(grace)
+	if c, ok := g.hub.Get(runner); ok && !c.closed.Load() {
+		return
+	}
+	ctx := context.Background()
+	g.turns.Range(func(key, value any) bool {
+		turn := value.(*turnContext)
+		if turn.Runner != runner {
+			return true
+		}
+		g.turns.Delete(key)
+		g.log.Warn("failing turn: runner gone past grace",
+			"runner", runner, "turn", turn.TurnID, "thread", turn.ThreadID)
+		if v, loaded := g.streams.Load(turn.TurnID); loaded {
+			v.(*stream).Close(ctx)
+		}
+		_ = g.store.FinishTurn(turn.TurnID, store.TurnError, "runner_offline: connection lost mid-turn",
+			time.Since(turn.StartedAt).Milliseconds(), 0)
+		if srf, ok := g.surfaceFor(turn.Surface); ok {
+			_, _ = srf.Post(ctx, surface.Post{
+				Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona,
+				Text: fmt.Sprintf(":warning: `%s` went offline mid-turn. Completed file changes are saved on the runner; message again to pick the session back up — if it is still down, the message will queue and deliver when it returns.", runner),
+			})
+		}
+		return true
+	})
+}
+
 // ---------------------------------------------------------------------------
 // Proxied MCP
 // ---------------------------------------------------------------------------

@@ -193,6 +193,15 @@ func (g *Gateway) Reload() error {
 // Run starts every surface and blocks until ctx is cancelled. The runner-facing
 // listener is started separately by ServeRunners.
 func (g *Gateway) Run(ctx context.Context) error {
+	// A restart empties the in-memory turn map, and events for unknown turns
+	// are dropped, so any row still "running" now can never be finished by its
+	// Done frame. Close them out rather than leaving permanent zombies.
+	if n, err := g.store.FailOpenTurns("gateway_restart: turn was in flight when the gateway restarted"); err != nil {
+		g.log.Error("failing open turns at startup failed", "err", err)
+	} else if n > 0 {
+		g.log.Info("closed out turns left running by a previous gateway", "count", n)
+	}
+
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(g.surfaces)+1)
 

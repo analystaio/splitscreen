@@ -244,7 +244,15 @@ func (c *Conn) writeLoop(ctx context.Context) {
 	}
 }
 
-// heartbeat pings on an interval so silence is detectable in bounded time.
+// heartbeat pings on an interval so silence is detectable in bounded time,
+// and acts on that silence: five unanswered periods close the connection.
+//
+// Closing is what makes the offline queue reachable. A host that hangs (rather
+// than exits) leaves the TCP session half-open, so writes into it keep
+// "succeeding" — pings included — and without this the connection stays in the
+// hub looking online while every message sent to it evaporates. Killing the
+// socket unblocks the read loop, which unregisters the runner, and from then
+// on messages queue with a visible in-thread notice instead.
 func (c *Conn) heartbeat(ctx context.Context, period time.Duration) {
 	t := time.NewTicker(period)
 	defer t.Stop()
@@ -255,6 +263,12 @@ func (c *Conn) heartbeat(ctx context.Context, period time.Duration) {
 			return
 		case <-t.C:
 			if c.closed.Load() {
+				return
+			}
+			if silence := time.Since(time.Unix(0, c.lastSeen.Load())); silence > 5*period {
+				c.gw.log.Warn("runner heartbeat timeout; dropping connection",
+					"runner", c.runner, "silence", silence.Round(time.Second))
+				c.CloseWith(fmt.Sprintf("heartbeat timeout: no traffic for %s", silence.Round(time.Second)))
 				return
 			}
 			nonce++

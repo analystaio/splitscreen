@@ -226,6 +226,7 @@ func (g *Gateway) serveConn(ctx context.Context, conn *Conn) {
 	conn.CloseWith("read loop ended")
 	g.hub.Unregister(conn)
 	g.failPendingFor(conn.runner)
+	go g.reconcileTurns(conn.runner, 10*g.cfg.Load().Gateway.Heartbeat.Duration())
 
 	status := websocket.CloseStatus(err)
 	g.log.Info("runner disconnected", "runner", conn.runner, "close_status", status, "err", err)

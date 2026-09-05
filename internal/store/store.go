@@ -235,6 +235,20 @@ func (s *Store) FinishTurn(turnID, status, errMsg string, durationMS int64, tool
 	return err
 }
 
+// FailOpenTurns marks every running turn as errored. Called at gateway
+// startup: a restart empties the in-memory turn map, and a Done frame for an
+// unknown turn is dropped, so a row still running at boot can never finish —
+// left alone it sits as "running" forever and poisons any liveness query.
+func (s *Store) FailOpenTurns(reason string) (int64, error) {
+	res, err := s.db.Exec(
+		`UPDATE turns SET status = ?, error = ?, ended_at = ? WHERE status = ?`,
+		TurnError, reason, s.ts(), TurnRunning)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *Store) IncrementToolCalls(turnID string) error {
 	_, err := s.db.Exec(`UPDATE turns SET num_tool_calls = num_tool_calls + 1 WHERE id = ?`, turnID)
 	return err

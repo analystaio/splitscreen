@@ -265,3 +265,42 @@ func TestLogRejectsUnmarshalableDetail(t *testing.T) {
 		t.Fatal("expected an error for an unmarshalable detail")
 	}
 }
+
+func TestFailOpenTurnsClosesOnlyRunning(t *testing.T) {
+	s := open(t)
+	if _, _, err := s.BindThread("k1", "slack", "C1", "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"t1", "t2", "t3"} {
+		if err := s.StartTurn(Turn{ID: id, ThreadID: "k1", Channel: "C1", Runner: "alpha", SurfaceUser: "U1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.FinishTurn("t1", TurnDone, "", 100, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := s.FailOpenTurns("gateway_restart")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("expected 2 open turns closed, got %d", n)
+	}
+
+	var done, errored int
+	if err := s.db.QueryRow(`SELECT count(*) FROM turns WHERE status = ?`, TurnDone).Scan(&done); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(`SELECT count(*) FROM turns WHERE status = ? AND error = 'gateway_restart' AND ended_at IS NOT NULL`, TurnError).Scan(&errored); err != nil {
+		t.Fatal(err)
+	}
+	if done != 1 || errored != 2 {
+		t.Fatalf("done=%d errored=%d, want 1 and 2", done, errored)
+	}
+
+	// Idempotent: a second sweep finds nothing.
+	if n, err := s.FailOpenTurns("gateway_restart"); err != nil || n != 0 {
+		t.Fatalf("second sweep: n=%d err=%v", n, err)
+	}
+}
