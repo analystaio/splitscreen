@@ -358,6 +358,7 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 				Text: fmt.Sprintf(":warning: `%s` went offline mid-turn. Completed file changes are saved on the runner; message again to pick the session back up — if it is still down, the message will queue and deliver when it returns.", runner),
 			})
 		}
+		g.turnSlotFreed(ctx, runner)
 		return true
 	})
 }
@@ -571,6 +572,7 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 		g.log.Error("finish turn failed", "turn", fr.TurnID, "err", err)
 	}
 	_ = g.store.TouchThread(turn.ThreadID)
+	g.turnSlotFreed(ctx, turn.Runner)
 }
 
 func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error) {
@@ -593,6 +595,7 @@ func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error
 		_ = g.store.FinishTurn(fr.TurnID, store.TurnError, fr.Code+": "+fr.Message,
 			time.Since(turn.StartedAt).Milliseconds(), 0)
 		g.turns.Delete(fr.TurnID)
+		g.turnSlotFreed(ctx, turn.Runner)
 	}
 
 	if fr.Fatal {

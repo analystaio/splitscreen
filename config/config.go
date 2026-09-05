@@ -103,6 +103,12 @@ type Runner struct {
 	Idle   Duration `yaml:"idle"`
 	Policy Policy   `yaml:"policy"`
 
+	// MaxConcurrent caps how many turns this runner may run at once. Beyond it,
+	// new turns queue with an in-thread position notice and dispatch as slots
+	// free. 0 means unlimited. This is the coding-task concurrency limit — the
+	// runner's own MaxSessions is the memory backstop, a different axis.
+	MaxConcurrent int `yaml:"max_concurrent"`
+
 	// TokenSecret names the enrollment secret this runner authenticates with.
 	// Defaults to "runner-<name>".
 	TokenSecret string `yaml:"token_secret"`

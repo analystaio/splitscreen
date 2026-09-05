@@ -51,9 +51,35 @@ type Gateway struct {
 	bundlesMu sync.Mutex
 	bundles   map[string]bundleState // runner -> last pushed bundle
 
+	queuesMu sync.Mutex
+	queues   map[string]*runnerQueue // runner -> concurrency queue
+
 	channels channelCache
 	grants   *grantStore
 }
+
+// runnerQueue bounds how many turns a runner runs at once. active is the count
+// currently dispatched (each decremented exactly once when its turn ends);
+// waiting holds turns admitted but not yet started, in arrival order.
+type runnerQueue struct {
+	active  int
+	waiting []*queuedTurn
+}
+
+// queuedTurn is an inbound message parked because its runner is at capacity.
+// It carries everything dispatchTurn needs plus the ref of its in-thread
+// position notice, which is edited as the queue advances.
+type queuedTurn struct {
+	in        surface.Inbound
+	runner    string
+	rc        *config.Runner
+	persona   surface.Persona
+	noticeRef surface.Ref
+}
+
+// maxQueueDepth bounds a runner's waiting list. A team that has queued this
+// many is better told to come back than to pile on unbounded latency.
+const maxQueueDepth = 25
 
 // Options configures a gateway.
 type Options struct {
@@ -99,6 +125,7 @@ func New(o Options) (*Gateway, error) {
 		surfaces: o.Surfaces,
 		hub:      NewHub(),
 		bundles:  map[string]bundleState{},
+		queues:   map[string]*runnerQueue{},
 		grants:   newGrantStore(),
 	}
 	g.channels.byID = map[string]channelState{}

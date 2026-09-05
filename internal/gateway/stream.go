@@ -299,7 +299,19 @@ func (s *stream) flushWith(ctx context.Context, final bool) {
 		s.pending.Reset()
 	}
 	native, fellBack := s.native, s.fellBack
+	// Whether there is anything worth sending: unsent prose (body past sent) or
+	// any steps. A turn that produced neither has nothing to show.
+	nothingToSend := s.body.Len() <= s.sent && len(s.order) == 0
 	s.mu.Unlock()
+
+	// A no-output turn must not open a native stream just to close it empty:
+	// OpenStream posts a message and closing it with no chunks leaves a blank
+	// bubble in the channel — the "sometimes Clank leaves an empty message" bug.
+	// The edit path already self-guards (it posts only non-empty text), and
+	// onDone reports "(no output)" for these, so silence is still handled.
+	if native == nil && nothingToSend {
+		return
+	}
 
 	srf, ok := s.gw.surfaceFor(s.turn.Surface)
 	if !ok {
