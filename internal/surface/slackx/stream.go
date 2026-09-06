@@ -155,7 +155,8 @@ func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
 	st.closed = true
 
 	chunks := st.chunksLocked(u)
-	if title := st.finalTitleLocked(); title != "" {
+	title := st.finalTitleLocked()
+	if title != "" {
 		chunks = append(chunks, slack.NewPlanUpdateChunk(title))
 	}
 	opts := []slack.MsgOption{}
@@ -163,10 +164,21 @@ func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
 		opts = append(opts, slack.MsgOptionChunks(chunks...))
 	}
 	_, _, err := st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID, opts...)
-	if err != nil {
-		return fmt.Errorf("slack: stop stream: %w", err)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// The full close was rejected — a long final answer dumped into one chunk
+	// hits msg_too_long, which left the card orphaned on its "Working…" title
+	// while the caller re-posted the answer as a separate message. Finalize the
+	// card with just its title (always small) so it leaves the streaming state;
+	// still return the original error so the caller re-delivers the prose.
+	var fin []slack.MsgOption
+	if title != "" {
+		fin = append(fin, slack.MsgOptionChunks(slack.NewPlanUpdateChunk(title)))
+	}
+	_, _, _ = st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID, fin...)
+	return fmt.Errorf("slack: stop stream: %w", err)
 }
 
 // chunksLocked converts one update into the streaming protocol's chunks,
