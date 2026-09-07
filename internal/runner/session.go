@@ -340,6 +340,23 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 		}
 	}
 	r.log.Info("session ended", "thread", ts.threadID)
+
+	// The event stream closed with a turn still open — the harness process
+	// ended after a tool call without emitting Done or Error (a crash, a kill,
+	// a usage limit), and was then idle-reaped. Left alone the gateway keeps
+	// the turn "running" forever and never frees its concurrency slot, so the
+	// runner slowly leaks toward looking permanently at-capacity. Report it so
+	// the turn is finalized and the slot released.
+	if ts.isBusy() {
+		turn := ts.turn()
+		ts.endTurn()
+		r.log.Warn("session ended with an open turn; reporting error",
+			"thread", ts.threadID, "turn", turn)
+		_ = r.send(ctx, &protocol.Error{
+			ThreadID: ts.threadID, TurnID: turn,
+			Code: "session_ended", Message: "the harness session ended before the turn completed",
+		})
+	}
 }
 
 // endSession stops a thread's harness process. The session id survives, so the
