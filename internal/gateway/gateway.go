@@ -53,6 +53,10 @@ type Gateway struct {
 
 	queuesMu sync.Mutex
 	queues   map[string]*runnerQueue // runner -> concurrency queue
+	// Per-thread serialization: at most one in-flight turn per thread. Guarded
+	// by queuesMu (same lock as the runner queues — they interact on dispatch).
+	threadActive  map[string]bool          // thread key -> a turn is in flight
+	threadWaiting map[string][]*queuedTurn // thread key -> messages parked behind it
 
 	channels channelCache
 	grants   *grantStore
@@ -115,18 +119,20 @@ func New(o Options) (*Gateway, error) {
 	}
 
 	g := &Gateway{
-		cfgPath:  o.ConfigPath,
-		store:    o.Store,
-		secrets:  o.Secrets,
-		prices:   o.Prices,
-		proxy:    mcpproxy.New(),
-		forge:    o.Forge,
-		log:      o.Logger,
-		surfaces: o.Surfaces,
-		hub:      NewHub(),
-		bundles:  map[string]bundleState{},
-		queues:   map[string]*runnerQueue{},
-		grants:   newGrantStore(),
+		cfgPath:       o.ConfigPath,
+		store:         o.Store,
+		secrets:       o.Secrets,
+		prices:        o.Prices,
+		proxy:         mcpproxy.New(),
+		forge:         o.Forge,
+		log:           o.Logger,
+		surfaces:      o.Surfaces,
+		hub:           NewHub(),
+		bundles:       map[string]bundleState{},
+		queues:        map[string]*runnerQueue{},
+		threadActive:  map[string]bool{},
+		threadWaiting: map[string][]*queuedTurn{},
+		grants:        newGrantStore(),
 	}
 	g.channels.byID = map[string]channelState{}
 	if g.surfaces == nil {
@@ -247,6 +253,12 @@ func (g *Gateway) Run(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		g.watchSecretExpiry(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		g.sweepStrandedTurns(ctx)
 	}()
 
 	wg.Add(1)

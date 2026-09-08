@@ -54,7 +54,9 @@ func (g *Gateway) turnFor(turnID string) (*turnContext, bool) {
 	if !ok {
 		return nil, false
 	}
-	return v.(*turnContext), true
+	turn := v.(*turnContext)
+	turn.touch() // any frame referencing the turn is activity; feeds the stranded-turn sweep
+	return turn, true
 }
 
 func (g *Gateway) onTextDelta(fr *protocol.TextDelta) {
@@ -359,8 +361,58 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 			})
 		}
 		g.turnSlotFreed(ctx, runner)
+		g.endThreadTurn(ctx, turn.ThreadID)
 		return true
 	})
+}
+
+// strandedTurnTimeout bounds how long a turn may go with zero upward frames
+// before the sweep declares it orphaned. It sits well beyond any real tool call
+// (which emit start/end frames) — a turn silent this long has lost or
+// misattributed its Done. Belt-and-suspenders behind per-thread serialization.
+const strandedTurnTimeout = 60 * time.Minute
+
+// sweepStrandedTurns finalizes turns that have gone silent past the timeout,
+// so a lost/misattributed Done cannot strand a turn "running" forever or leak
+// its concurrency slot. Runs for the life of the gateway.
+func (g *Gateway) sweepStrandedTurns(ctx context.Context) {
+	t := time.NewTicker(2 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			g.sweepStrandedOnce(ctx, strandedTurnTimeout)
+		}
+	}
+}
+
+// sweepStrandedOnce finalizes every turn silent longer than timeout. Split out
+// from the ticker loop so it can be tested directly.
+func (g *Gateway) sweepStrandedOnce(ctx context.Context, timeout time.Duration) int {
+	n := 0
+	g.turns.Range(func(key, value any) bool {
+		turn := value.(*turnContext)
+		if turn.idle() < timeout {
+			return true
+		}
+		g.turns.Delete(key)
+		n++
+		g.log.Warn("finalizing stranded turn",
+			"turn", turn.TurnID, "thread", turn.ThreadID, "runner", turn.Runner,
+			"idle", turn.idle().Round(time.Second))
+		if v, loaded := g.streams.Load(turn.TurnID); loaded {
+			v.(*stream).Close(ctx)
+		}
+		_ = g.store.FinishTurn(turn.TurnID, store.TurnError,
+			"stranded: no activity past timeout (Done lost or misattributed)",
+			time.Since(turn.StartedAt).Milliseconds(), 0)
+		g.turnSlotFreed(ctx, turn.Runner)
+		g.endThreadTurn(ctx, turn.ThreadID)
+		return true
+	})
+	return n
 }
 
 // ---------------------------------------------------------------------------
@@ -573,6 +625,7 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 	}
 	_ = g.store.TouchThread(turn.ThreadID)
 	g.turnSlotFreed(ctx, turn.Runner)
+	g.endThreadTurn(ctx, turn.ThreadID)
 }
 
 func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error) {
@@ -596,6 +649,7 @@ func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error
 			time.Since(turn.StartedAt).Milliseconds(), 0)
 		g.turns.Delete(fr.TurnID)
 		g.turnSlotFreed(ctx, turn.Runner)
+		g.endThreadTurn(ctx, turn.ThreadID)
 	}
 
 	if fr.Fatal {

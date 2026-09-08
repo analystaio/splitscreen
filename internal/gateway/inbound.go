@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/avarant/splitscreen/config"
@@ -28,6 +29,16 @@ type turnContext struct {
 	Persona   surface.Persona
 	Activity  string
 	StartedAt time.Time
+
+	// lastActivity (unix nanos) is bumped on every upward frame. The stranded-
+	// turn sweep uses it: a turn silent far longer than any real tool call has
+	// been orphaned (its Done was lost or misattributed) and must be finalized.
+	lastActivity atomic.Int64
+}
+
+func (t *turnContext) touch() { t.lastActivity.Store(time.Now().UnixNano()) }
+func (t *turnContext) idle() time.Duration {
+	return time.Since(time.Unix(0, t.lastActivity.Load()))
 }
 
 func newID(prefix string) string {
@@ -163,16 +174,30 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 		return
 	}
 
-	// Concurrency gate. Only when the runner is online: an offline runner has no
-	// active turns, so its messages belong in the persisted offline queue
-	// (dispatchTurn handles that), not this in-memory concurrency queue. admit
-	// returns true when it has parked the message with a position notice.
+	// Serialize per thread first. A thread is one conversation on one harness
+	// session, which cannot run two turns at once: a second turn's dispatch
+	// clobbers the runner's single current-turn pointer, so the first turn's
+	// Done is misattributed and the first turn is stranded "running" forever
+	// (leaking its concurrency slot). If the thread already has a turn in
+	// flight, park this message behind it; it dispatches when that turn ends.
+	if !g.beginThreadTurn(ctx, in, key, runnerName, rc, persona) {
+		return
+	}
+
+	g.dispatchAdmitted(ctx, in, runnerName, rc, persona)
+}
+
+// dispatchAdmitted applies the per-runner concurrency cap and dispatches. The
+// thread slot is already held by the caller (OnMessage or endThreadTurn).
+func (g *Gateway) dispatchAdmitted(ctx context.Context, in surface.Inbound, runnerName string, rc *config.Runner, persona surface.Persona) {
+	// Only gate when online: an offline runner has no active turns, so its
+	// messages belong in the persisted offline queue (dispatchTurn handles
+	// that), not the in-memory concurrency queue.
 	if _, online := g.hub.Get(runnerName); online && rc.MaxConcurrent > 0 {
 		if g.admit(ctx, in, runnerName, rc, persona) {
 			return
 		}
 	}
-
 	g.dispatchTurn(ctx, in, runnerName, rc, persona)
 }
 
@@ -197,6 +222,7 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 		Activity:  rc.Display.EffectiveActivity(),
 		StartedAt: time.Now(),
 	}
+	turn.touch()
 	if err := g.store.StartTurn(store.Turn{
 		ID: turn.TurnID, ThreadID: key, Channel: in.Channel,
 		Runner: runnerName, SurfaceUser: in.User.ID,
@@ -403,6 +429,91 @@ func (g *Gateway) editQueueNotice(ctx context.Context, qt *queuedTurn, pos, acti
 		Persona: qt.persona,
 	}); err != nil {
 		g.log.Warn("queue notice update failed", "runner", qt.runner, "err", err)
+	}
+}
+
+// beginThreadTurn reserves the thread's single turn slot. It returns true when
+// the thread was free (the caller proceeds to dispatch), or false when a turn
+// is already in flight — the message is parked behind it with a notice and will
+// dispatch from endThreadTurn when that turn ends.
+func (g *Gateway) beginThreadTurn(ctx context.Context, in surface.Inbound, key, runner string, rc *config.Runner, persona surface.Persona) bool {
+	g.queuesMu.Lock()
+	if !g.threadActive[key] {
+		g.threadActive[key] = true
+		g.queuesMu.Unlock()
+		return true
+	}
+	qt := &queuedTurn{in: in, runner: runner, rc: rc, persona: persona}
+	g.threadWaiting[key] = append(g.threadWaiting[key], qt)
+	pos := len(g.threadWaiting[key])
+	g.queuesMu.Unlock()
+
+	ref, err := g.postThreadNotice(ctx, in, persona, pos)
+	if err != nil {
+		g.log.Warn("thread queue notice post failed", "thread", key, "err", err)
+		return false
+	}
+	g.queuesMu.Lock()
+	qt.noticeRef = ref
+	g.queuesMu.Unlock()
+	return false
+}
+
+// endThreadTurn releases the thread's turn slot when its in-flight turn ends.
+// If messages are parked behind it, the head is dispatched (through the runner
+// concurrency gate) and the rest have their positions advanced.
+func (g *Gateway) endThreadTurn(ctx context.Context, key string) {
+	g.queuesMu.Lock()
+	if len(g.threadWaiting[key]) == 0 {
+		delete(g.threadActive, key)
+		delete(g.threadWaiting, key)
+		g.queuesMu.Unlock()
+		return
+	}
+	next := g.threadWaiting[key][0]
+	g.threadWaiting[key] = g.threadWaiting[key][1:]
+	// threadActive[key] stays true: the parked turn now becomes the in-flight one.
+	rest := append([]*queuedTurn(nil), g.threadWaiting[key]...)
+	g.queuesMu.Unlock()
+
+	g.editThreadNotice(ctx, next, 0) // 0 => "starting now"
+	for i, qt := range rest {
+		g.editThreadNotice(ctx, qt, i+1)
+	}
+	g.dispatchAdmitted(ctx, next.in, next.runner, next.rc, next.persona)
+}
+
+func threadNoticeText(pos int) string {
+	if pos <= 0 {
+		return "▶️ The earlier turn in this thread finished — starting yours now…"
+	}
+	return fmt.Sprintf("⏳ This thread already has a turn running — you're #%d behind it. I'll start yours when it finishes (one turn per thread at a time).", pos)
+}
+
+func (g *Gateway) postThreadNotice(ctx context.Context, in surface.Inbound, persona surface.Persona, pos int) (surface.Ref, error) {
+	srf, ok := g.surfaceFor(in.Surface)
+	if !ok {
+		return surface.Ref{}, fmt.Errorf("gateway: no surface %q", in.Surface)
+	}
+	return srf.Post(ctx, surface.Post{
+		Channel: in.Channel, Thread: in.Thread,
+		Text: threadNoticeText(pos), Persona: persona,
+	})
+}
+
+func (g *Gateway) editThreadNotice(ctx context.Context, qt *queuedTurn, pos int) {
+	if qt.noticeRef == (surface.Ref{}) {
+		return
+	}
+	srf, ok := g.surfaceFor(qt.in.Surface)
+	if !ok {
+		return
+	}
+	if err := srf.Update(ctx, qt.noticeRef, surface.Post{
+		Channel: qt.in.Channel, Thread: qt.in.Thread,
+		Text: threadNoticeText(pos), Persona: qt.persona,
+	}); err != nil {
+		g.log.Warn("thread queue notice update failed", "err", err)
 	}
 }
 
