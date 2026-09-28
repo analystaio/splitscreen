@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"os"
@@ -176,17 +177,30 @@ func configCmd() *cobra.Command {
 	}
 
 	var cfgPath string
+	var resolve bool
 	check := &cobra.Command{
 		Use:   "check",
 		Short: "Validate a configuration file",
 		Long: `Validates a configuration file and reports every problem at once.
 
 This is the same code path the gateway uses on load and on SIGHUP, so a config
-that passes here will not be rejected at reload.`,
+that passes here will not be rejected at reload.
+
+--resolve also resolves every secret the config references, through the same
+backends and the same rules as gateway startup, so a deploy can pre-flight a
+restart. Run it as the gateway's user (or root) on the gateway host, where the
+secrets directory and the Parameter Store credentials are. A missing surface,
+forge, harness, or MCP secret fails the check exactly as it would fail
+startup; a runner with no enrollment secret is a warning, as at startup.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.Load(cfgPath)
 			if err != nil {
 				return err
+			}
+			if resolve {
+				if err := resolveCheck(cmd, cfg); err != nil {
+					return err
+				}
 			}
 			fmt.Printf("%s is valid.\n", cfgPath)
 			for _, w := range cfg.Warnings {
@@ -228,9 +242,36 @@ that passes here will not be rejected at reload.`,
 		},
 	}
 	check.Flags().StringVarP(&cfgPath, "config", "c", defaultConfigPath, "path to the configuration file")
+	check.Flags().BoolVar(&resolve, "resolve", false, "also resolve every referenced secret, as gateway startup does")
 
 	cmd.AddCommand(check)
 	return cmd
+}
+
+// resolveCheck runs gateway startup's secret verification against the
+// configured backends. Unenrolled runners are reported, not fatal.
+func resolveCheck(cmd *cobra.Command, cfg *config.Config) error {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sec, err := buildSecrets(cmd.Context(), cfg, log)
+	if err != nil {
+		return fmt.Errorf("secret backends: %w", err)
+	}
+	rep := checkSecrets(cfg, sec)
+	runners := make([]string, 0, len(rep.Unenrolled))
+	for r := range rep.Unenrolled {
+		runners = append(runners, r)
+	}
+	sort.Strings(runners)
+	for _, r := range runners {
+		fmt.Printf("  warning: runner %q has no enrollment secret %q; it cannot connect until one exists\n",
+			r, rep.Unenrolled[r])
+	}
+	if len(rep.Fatal) > 0 {
+		return fmt.Errorf("%d secret(s) the gateway needs to start could not be resolved: %v",
+			len(rep.Fatal), rep.Fatal)
+	}
+	fmt.Printf("All secrets the gateway needs to start resolved.\n")
+	return nil
 }
 
 // ---------------------------------------------------------------------------

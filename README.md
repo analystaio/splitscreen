@@ -317,7 +317,15 @@ bundle-owned.
 ## Configuration reference
 
 `splitscreen config check` validates everything and reports every problem at
-once. A config either loads wholly or not at all — a bad edit never partially
+once. With `--resolve`, run as the gateway's user on the gateway host, it also
+resolves every referenced secret through the configured backends, exactly as
+startup does — use it to pre-flight a restart.
+
+At startup a missing surface, forge, harness, or proxied-MCP secret is fatal. A
+missing runner enrollment secret is not: that runner is logged as unenrolled and
+refused until the secret exists, and everything else runs. One box's token — or
+a template runner that is never enrolled at all — must not take every runner
+down. A config either loads wholly or not at all — a bad edit never partially
 applies, including on `SIGHUP` reload.
 
 Validation distinguishes errors from warnings. An error means the config cannot
