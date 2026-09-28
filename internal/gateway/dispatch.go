@@ -343,7 +343,7 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 	ctx := context.Background()
 	g.turns.Range(func(key, value any) bool {
 		turn := value.(*turnContext)
-		if turn.Runner != runner {
+		if turn.Runner != runner || turn.queued.Load() {
 			return true
 		}
 		g.turns.Delete(key)
@@ -394,7 +394,9 @@ func (g *Gateway) sweepStrandedOnce(ctx context.Context, timeout time.Duration) 
 	n := 0
 	g.turns.Range(func(key, value any) bool {
 		turn := value.(*turnContext)
-		if turn.idle() < timeout {
+		// A queued turn is waiting in a persisted queue for its runner to come
+		// back, not stuck: finalizing it would orphan the message it delivers.
+		if turn.idle() < timeout || turn.queued.Load() {
 			return true
 		}
 		g.turns.Delete(key)

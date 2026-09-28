@@ -511,6 +511,16 @@ func (s *Store) DeleteQueued(id int64) error {
 	return err
 }
 
+// PurgeQueue deletes everything queued for a runner, returning how many rows
+// went. Used when a runner is removed: nothing will ever drain its queue.
+func (s *Store) PurgeQueue(runner string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM queued_messages WHERE runner = ?`, runner)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (s *Store) QueueDepth(runner string) (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM queued_messages WHERE runner = ?`, runner).Scan(&n)

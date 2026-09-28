@@ -20,6 +20,7 @@ import (
 	"github.com/avarant/splitscreen/internal/secrets"
 	"github.com/avarant/splitscreen/internal/store"
 	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/avarant/splitscreen/internal/wake"
 )
 
 // Gateway is the singleton control plane.
@@ -60,6 +61,18 @@ type Gateway struct {
 
 	channels channelCache
 	grants   *grantStore
+
+	// heldFiles keeps attachments for messages queued while their runner is
+	// offline (turn id -> []surface.File), relayed when the queue drains. In
+	// memory only: a file handle is a closure over the surface credential, so
+	// a gateway restart before the runner returns drops them.
+	heldFiles sync.Map
+
+	waker          wake.Starter
+	wakeMu         sync.Mutex
+	wakes          map[string]*wakeState
+	wakeRetryEvery time.Duration
+	wakeRetryFor   time.Duration
 }
 
 // runnerQueue bounds how many turns a runner runs at once. active is the count
@@ -95,6 +108,9 @@ type Options struct {
 	Forge      forge.Provider
 	Surfaces   map[string]surface.Surface
 	Logger     *slog.Logger
+	// Waker starts the machine of an offline runner that declares wake. Nil
+	// means wake requests are reported in-thread as impossible.
+	Waker wake.Starter
 }
 
 // New builds a gateway. It does not connect anything; call Run.
@@ -133,6 +149,11 @@ func New(o Options) (*Gateway, error) {
 		threadActive:  map[string]bool{},
 		threadWaiting: map[string][]*queuedTurn{},
 		grants:        newGrantStore(),
+		waker:         o.Waker,
+		wakes:         map[string]*wakeState{},
+
+		wakeRetryEvery: defaultWakeRetryEvery,
+		wakeRetryFor:   defaultWakeRetryFor,
 	}
 	g.channels.byID = map[string]channelState{}
 	if g.surfaces == nil {
@@ -218,10 +239,40 @@ func (g *Gateway) Reload() error {
 					g.log.Warn("runner removed from config; closing", "runner", name)
 					conn.CloseWith("runner removed from configuration")
 				}
+				g.dropRemovedRunner(name)
 			}
 		}
 	}
 	return nil
+}
+
+// dropRemovedRunner discards what was waiting for a runner that no longer
+// exists. Its queued messages can never be delivered, and their turns — which
+// are exempt from the stranded sweep because they are waiting, not stuck —
+// would otherwise hold their threads forever.
+func (g *Gateway) dropRemovedRunner(name string) {
+	ctx := context.Background()
+	if n, err := g.store.PurgeQueue(name); err != nil {
+		g.log.Error("purging a removed runner's queue failed", "runner", name, "err", err)
+	} else if n > 0 {
+		g.log.Warn("discarded messages queued for a removed runner", "runner", name, "count", n)
+	}
+	g.turns.Range(func(_, value any) bool {
+		turn := value.(*turnContext)
+		if turn.Runner == name && turn.queued.Load() {
+			g.abandonTurn(ctx, turn, "runner_removed: queued for a runner that was removed")
+			if srf, ok := g.surfaceFor(turn.Surface); ok {
+				_, _ = srf.Post(ctx, surface.Post{
+					Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona,
+					Text: fmt.Sprintf("`%s` was removed before it came back; your queued message was discarded.", name),
+				})
+			}
+		}
+		return true
+	})
+	g.wakeMu.Lock()
+	delete(g.wakes, name)
+	g.wakeMu.Unlock()
 }
 
 // invalidateRunnerSecrets drops cached enrollment secrets for every runner a
