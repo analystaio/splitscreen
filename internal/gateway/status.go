@@ -31,6 +31,8 @@ func (g *Gateway) StatusText() string {
 		depth, _ := g.store.QueueDepth(name)
 
 		switch {
+		case !online && rc.Wakeable():
+			b.WriteString(fmt.Sprintf("• `%s` — :zzz: asleep, wakes on message (`%s`)", name, rc.Wake.EC2Instance))
 		case !online:
 			// A configured runner that never connects is usually a typo in a
 			// route or a stopped unit; it should read as a problem, not silence.

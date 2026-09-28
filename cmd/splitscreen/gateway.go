@@ -19,6 +19,7 @@ import (
 	"github.com/avarant/splitscreen/internal/store"
 	"github.com/avarant/splitscreen/internal/surface"
 	"github.com/avarant/splitscreen/internal/surface/slackx"
+	"github.com/avarant/splitscreen/internal/wake"
 )
 
 func gatewayCmd() *cobra.Command {
@@ -80,6 +81,10 @@ delivery bug this architecture exists to eliminate.`,
 				Forge:      fg,
 				Surfaces:   surfaces,
 				Logger:     log,
+				// Clients are built on first use, so this costs nothing until a
+				// runner declaring wake is actually asleep. Runners that name no
+				// region use the Parameter Store region, then the ambient one.
+				Waker: wake.NewEC2(cfg.Gateway.SecretsSSM.Region),
 			})
 			if err != nil {
 				return err
