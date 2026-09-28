@@ -177,6 +177,15 @@ gateway:
     cache_ttl: 5m
 ```
 
+For automation, the cleanest enrollment is to skip `enroll` entirely: generate the
+token wherever the runner will get it from, and write the gateway's copy to
+`<prefix>/runner-<name>` in Parameter Store. The gateway reads it on the runner's next
+connection; a reload that adds the runner drops any cached value, so there is no TTL to
+wait out. Keep in mind that a file of the same name in `secrets_dir` wins —
+`runner add` refuses to proceed while one exists. Where a script does want the local
+store, `enroll <name> --write --token-stdin` stores a token it supplies, and
+`--print-token` prints nothing but the token.
+
 The Parameter Store backend reads with the host's own IAM identity, so there is
 no bootstrap secret on the gateway and every read is attributable in CloudTrail.
 Values are cached briefly because authentication resolves a secret on every
@@ -237,10 +246,71 @@ splitscreen route remove C0123456789
 systemctl reload splitscreen-gateway
 ```
 
+Runners themselves are managed the same way. A control plane that creates a runner
+per task machine copies a template rather than writing YAML:
+
+```sh
+splitscreen runner list [--json]
+splitscreen runner add box-foo --template box-template \
+    --set display.name="Box foo" --set host=i-0123456789abcdef0 \
+    --set wake.ec2_instance=i-0123456789abcdef0 --set wake.region=us-east-2
+splitscreen route add C0BOXFOO01 box-foo
+systemctl reload splitscreen-gateway
+
+splitscreen runner remove box-foo [--missing-ok]   # also drops its routes
+systemctl reload splitscreen-gateway
+```
+
+`--set` takes a dotted path to a scalar field and creates missing sections; values are
+typed as YAML would read them. `token_secret` and `wake` are never copied from the
+template. `runner remove` removes every route to the runner in the same edit and deletes
+its file in `secrets_dir`; on reload the gateway disconnects it and refuses its token
+from then on. Every edit takes a lock beside the config file, so concurrent invocations
+cannot lose each other's changes, and keeps the file's owner when run as root.
+
 There is deliberately no chat command that mutates routing. Which humans can
 drive which machines and working trees is not a decision that should be typed by
 whoever happens to be in the channel; `!rebind` exists for the thread-level case
 because that has no blast radius.
+
+## Sleeping runners
+
+A runner whose host stops itself when idle can name the machine to start:
+
+```yaml
+runners:
+  box-foo:
+    wake:
+      ec2_instance: i-0123456789abcdef0
+      region: us-east-2            # default: gateway.secrets_ssm.region, then ambient
+```
+
+When a message queues for it while it is offline, the gateway calls
+`ec2:StartInstances` — at most once per runner per two minutes — and posts a visible
+in-thread notice as the runner ("asleep — starting it now"), edited to "awake" when the
+runner connects. A host still shutting down is retried for five minutes; a start that
+fails says why in the thread and leaves the message queued. The gateway's IAM role needs
+`ec2:StartInstances` on those instances; scope it with a tag condition.
+
+Attachments sent to any offline runner are held and delivered when it reconnects,
+unless the gateway restarts first.
+
+## Persistent runtime state
+
+By default a runner's harness config lives on tmpfs and is rebuilt on every bundle push,
+so the agent's own memory, transcripts, and runtime-created skills do not survive a push
+or a reboot. Give the runner a state directory to keep them:
+
+```sh
+splitscreen runner --name box-foo ... --state-dir /home/ubuntu/.local/state/splitscreen/box-foo
+# or SPLITSCREEN_STATE_DIR in the unit's environment file
+```
+
+`projects/` (memory and transcripts) and `skills/` are then symlinked into it,
+`sessions.json` keeps each thread's resume point across restarts, and `CLAUDE.local.md`
+there is appended to the bundle's `CLAUDE.md` at every session start — the one durable
+place for notes. Bundle skills still win on a name clash; bundle memory stays
+bundle-owned.
 
 ## Configuration reference
 
@@ -253,6 +323,11 @@ work and blocks loading. A warning — a runner with no routes, say — means it
 probably is not what you meant, but it runs; blocking on those would make
 legitimate intermediate states unreachable, such as removing a runner's last
 route before removing the runner.
+
+Runner fields: `display` (`name`, `icon`, `show_activity`), `host`, `cwd`, `harness`,
+`bundle`, `model`, `idle`, `max_concurrent`, `policy`, `token_secret`, `harness_secret`,
+`harness_env`, `billing`, and `wake` (`ec2_instance`, `region`).
+See [`examples/splitscreen.yaml`](examples/splitscreen.yaml) and the field comments in `config/config.go`.
 
 Enforced invariants include: one channel maps to exactly one runner, at most one
 DM route, bundle `extends` chains are acyclic, proxied MCP servers declare no
@@ -267,7 +342,8 @@ journalctl -u splitscreen-gateway -f     # structured JSON logs
 ```
 
 Runners run as an unprivileged user (harnesses refuse dangerous permission modes
-as root) with the runtime root on tmpfs. One host can serve several runners:
+as root) with the runtime root on tmpfs, and optionally a persistent state directory
+(see above). One host can serve several runners:
 each gets its own config directory, its own unix socket, and its own persona.
 
 ```sh
