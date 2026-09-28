@@ -240,6 +240,7 @@ func (r *Runner) handleMessage(ctx context.Context, msg *protocol.Message) {
 		return
 	}
 	ts.setTurn(msg.TurnID)
+	r.touchActive()
 
 	in := harness.Input{Text: msg.Text}
 	for _, att := range msg.Attachments {
@@ -284,6 +285,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 		// that outlives the idle timeout is reaped mid-flight while it is
 		// still streaming tool calls.
 		ts.touch()
+		r.markActive()
 		turn := ts.turn()
 		switch ev.Kind {
 		case harness.EventText:
@@ -333,6 +335,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			ts.sessionMu.Unlock()
 			r.rememberSession(ts.threadID, sid)
 			ts.endTurn()
+			r.settleActive()
 			_ = r.send(ctx, &protocol.Done{
 				ThreadID: ts.threadID, TurnID: turn,
 				SessionID: sid, NumToolCalls: ev.ToolCalls,
@@ -340,6 +343,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 
 		case harness.EventError:
 			ts.endTurn()
+			r.settleActive()
 			_ = r.send(ctx, &protocol.Error{
 				ThreadID: ts.threadID, TurnID: turn,
 				Code: "harness_error", Message: ev.Error,
@@ -357,6 +361,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 	if ts.isBusy() {
 		turn := ts.turn()
 		ts.endTurn()
+		r.settleActive()
 		r.log.Warn("session ended with an open turn; reporting error",
 			"thread", ts.threadID, "turn", turn)
 		_ = r.send(ctx, &protocol.Error{

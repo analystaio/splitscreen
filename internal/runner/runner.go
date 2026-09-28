@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -79,8 +80,10 @@ type Runner struct {
 	sessions sync.Map // thread id -> *threadSession
 	// sessionIDs persists resume points when a state dir is configured.
 	sessionIDs *sessionIndex
-	pending    sync.Map // request id -> chan any
-	blobs      sync.Map // blob id -> *inboundBlob
+	// activeTouched (unix nanos) throttles the activity marker.
+	activeTouched atomic.Int64
+	pending       sync.Map // request id -> chan any
+	blobs         sync.Map // blob id -> *inboundBlob
 
 }
 
@@ -138,6 +141,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer r.ipc.close()
 
 	go r.sweepIdle(ctx)
+	go r.maintainActive(ctx)
 
 	backoff := time.Second
 	for ctx.Err() == nil {
