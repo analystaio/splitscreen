@@ -181,7 +181,8 @@ For automation, the cleanest enrollment is to skip `enroll` entirely: generate t
 token wherever the runner will get it from, and write the gateway's copy to
 `<prefix>/runner-<name>` in Parameter Store. The gateway reads it on the runner's next
 connection; a reload that adds the runner drops any cached value, so there is no TTL to
-wait out. Keep in mind that a file of the same name in `secrets_dir` wins —
+wait out — and a failed authentication drops the cached value too, so a runner that
+dialled before its parameter existed gets in on its next retry. Keep in mind that a file of the same name in `secrets_dir` wins —
 `runner add` refuses to proceed while one exists. Where a script does want the local
 store, `enroll <name> --write --token-stdin` stores a token it supplies, and
 `--print-token` prints nothing but the token.
@@ -252,8 +253,7 @@ per task machine copies a template rather than writing YAML:
 ```sh
 splitscreen runner list [--json]
 splitscreen runner add box-foo --template box-template \
-    --set display.name="Box foo" --set host=i-0123456789abcdef0 \
-    --set wake.ec2_instance=i-0123456789abcdef0 --set wake.region=us-east-2
+    --set display.name="Box foo" --set host=i-0123456789abcdef0
 splitscreen route add C0BOXFOO01 box-foo
 systemctl reload splitscreen-gateway
 
@@ -262,8 +262,10 @@ systemctl reload splitscreen-gateway
 ```
 
 `--set` takes a dotted path to a scalar field and creates missing sections; values are
-typed as YAML would read them. `token_secret` and `wake` are never copied from the
-template. `runner remove` removes every route to the runner in the same edit and deletes
+typed as YAML would read them. `token_secret` is never copied from the template. A
+template's `wake` block is copied without its `ec2_instance`; the copy wakes its own
+`host` when that is an instance id (or whatever `--set wake.ec2_instance` says), so
+`--set host=i-…` alone makes a wakeable runner. `runner remove` removes every route to the runner in the same edit and deletes
 its file in `secrets_dir`; on reload the gateway disconnects it and refuses its token
 from then on. Every edit takes a lock beside the config file, so concurrent invocations
 cannot lose each other's changes, and keeps the file's owner when run as root.
@@ -343,7 +345,13 @@ journalctl -u splitscreen-gateway -f     # structured JSON logs
 
 Runners run as an unprivileged user (harnesses refuse dangerous permission modes
 as root) with the runtime root on tmpfs, and optionally a persistent state directory
-(see above). One host can serve several runners:
+(see above).
+
+While any turn is in flight a runner keeps `<runtime-root>/<name>/active` (by default
+`$XDG_RUNTIME_DIR/splitscreen/<name>/active`) with an mtime at most 30 s old, and
+removes it when the last turn ends. A host that stops itself when idle can use it to
+tell a long, quiet turn from no turn; treat an mtime older than about a minute as stale,
+since a runner killed mid-turn cannot remove it. One host can serve several runners:
 each gets its own config directory, its own unix socket, and its own persona.
 
 ```sh
