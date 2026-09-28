@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -178,18 +179,59 @@ func buildSecrets(ctx context.Context, cfg *config.Config, log *slog.Logger) (se
 	return chain, nil
 }
 
-func verifySecrets(cfg *config.Config, sec secrets.Backend, log *slog.Logger) error {
-	var missing []string
+// secretReport is the outcome of resolving every secret a config references.
+type secretReport struct {
+	// Missing secrets the gateway cannot run without: surface, forge, harness,
+	// and proxied-MCP credentials.
+	Fatal []string
+	// Unenrolled runners: their enrollment secret is missing, so they cannot
+	// connect until it exists. One runner's missing token must never take the
+	// gateway — and every other runner — down with it; runners come and go
+	// with their machines, and a template is never enrolled at all.
+	Unenrolled map[string]string // runner -> secret name
+}
+
+func checkSecrets(cfg *config.Config, sec secrets.Backend) secretReport {
+	tokens := cfg.RunnerTokenSecrets()
+	nonToken := map[string]bool{}
 	for _, name := range cfg.SecretRefs() {
-		if _, err := sec.Get(name); err != nil {
-			missing = append(missing, name)
+		if _, isToken := tokens[name]; !isToken {
+			nonToken[name] = true
 		}
 	}
-	if len(missing) == 0 {
+	// A name used both as a token and as something else is fatal if missing.
+	for _, r := range cfg.Runners {
+		if r != nil && r.HarnessSecret != "" {
+			nonToken[r.HarnessSecret] = true
+		}
+	}
+
+	rep := secretReport{Unenrolled: map[string]string{}}
+	for _, name := range cfg.SecretRefs() {
+		if _, err := sec.Get(name); err == nil {
+			continue
+		}
+		if nonToken[name] {
+			rep.Fatal = append(rep.Fatal, name)
+		} else {
+			rep.Unenrolled[tokens[name]] = name
+		}
+	}
+	sort.Strings(rep.Fatal)
+	return rep
+}
+
+func verifySecrets(cfg *config.Config, sec secrets.Backend, log *slog.Logger) error {
+	rep := checkSecrets(cfg, sec)
+	for runner, name := range rep.Unenrolled {
+		log.Warn("runner has no enrollment secret; it cannot connect until one exists",
+			"runner", runner, "secret", name)
+	}
+	if len(rep.Fatal) == 0 {
 		return nil
 	}
 	return fmt.Errorf("gateway: %d secret(s) referenced by the config could not be resolved: %v",
-		len(missing), missing)
+		len(rep.Fatal), rep.Fatal)
 }
 
 func buildSurfaces(cfg *config.Config, sec secrets.Backend, log *slog.Logger) (map[string]surface.Surface, error) {
