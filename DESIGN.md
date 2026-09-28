@@ -250,7 +250,10 @@ drop the first edit.
 
 `runner add <name> --template <runner>` copies an existing definition (typically one
 kept for the purpose and routed nowhere) and overrides scalar fields by dotted path.
-`token_secret` and `wake` are never copied, because each identifies exactly one runner.
+`token_secret` is never copied, because it identifies exactly one runner. A wake target
+is the same kind of thing, so a template's `wake` block is copied without its
+`ec2_instance`, and the copy's comes from `--set wake.ec2_instance` or, failing that, from
+its `host` when that is an instance id — never from the template.
 `runner remove` drops the runner and every route to it in one edit — a route to a missing
 runner is invalid, so neither can go first — and deletes its secrets-directory file. On
 reload the gateway closes a removed runner's connection, refuses its token from then on

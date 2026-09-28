@@ -112,3 +112,25 @@ func TestRemovedRunnerIsDisconnectedAndRefused(t *testing.T) {
 		break
 	}
 }
+
+// A failed authentication drops the cached secret, so a token written after a
+// runner's first (failed) attempt is read on its next one, not after the TTL.
+func TestFailedAuthInvalidatesCachedSecret(t *testing.T) {
+	h := newHarness(t)
+	rec := &recordingSecrets{Backend: h.gw.secrets}
+	h.gw.secrets = rec
+
+	ws := h.connect(t, "wrong")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for {
+		if _, _, err := ws.Read(ctx); err != nil {
+			break
+		}
+	}
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if strings.Join(rec.invalidated, ",") != "runner-alpha" {
+		t.Fatalf("invalidated %v after a failed auth, want runner-alpha", rec.invalidated)
+	}
+}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/avarant/splitscreen/config"
 
+	"github.com/avarant/splitscreen/internal/secrets"
 	"github.com/avarant/splitscreen/internal/store"
 	"github.com/avarant/splitscreen/protocol"
 )
@@ -187,14 +188,27 @@ func (g *Gateway) authenticate(hello *protocol.Hello, rc *config.Runner) error {
 	switch hello.Auth.Mode {
 	case protocol.AuthToken:
 		name := rc.EffectiveTokenSecret(hello.Runner)
+		// A failure drops the cached value, so the runner's next attempt reads
+		// the source again. Otherwise a token written or rotated after a failed
+		// attempt — a machine that dialled before its parameter existed — would
+		// be refused for the rest of the cache TTL. The runner's own reconnect
+		// backoff bounds how often this reaches the backend.
+		invalidate := func() {
+			if inv, ok := g.secrets.(secrets.Invalidator); ok {
+				inv.Invalidate(name)
+			}
+		}
 		want, err := g.secrets.Get(name)
 		if err != nil {
+			invalidate()
 			return fmt.Errorf("enrollment secret %q is unavailable: %w", name, err)
 		}
 		if want.Value == "" {
+			invalidate()
 			return fmt.Errorf("enrollment secret %q is empty", name)
 		}
 		if subtle.ConstantTimeCompare([]byte(want.Value), []byte(hello.Auth.Value)) != 1 {
+			invalidate()
 			return errors.New("enrollment token does not match")
 		}
 		return nil

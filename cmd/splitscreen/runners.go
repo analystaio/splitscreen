@@ -34,9 +34,10 @@ func runnerManageCmds() []*cobra.Command {
 
 // identityKeys are never copied from a template. Each names something that must
 // be unique to one runner: sharing a token secret would let either runner
-// authenticate as the other, and sharing a wake target would boot the wrong
-// machine.
-var identityKeys = []string{"token_secret", "wake"}
+// authenticate as the other. The wake target is the same kind of thing and is
+// handled separately — a template's wake block (its region) is copied, but its
+// ec2_instance never is; the copy's comes from --set or from its host.
+var identityKeys = []string{"token_secret"}
 
 func runnerListCmd() *cobra.Command {
 	var cfgPath string
@@ -124,8 +125,10 @@ and validates the whole result before writing.
 
 The template is usually a runner kept for this purpose and routed nowhere, so
 policy, bundle, and harness settings are written once and every copy inherits
-them. Its token_secret and wake settings are never copied — each identifies one
-runner, and sharing either would be a security or correctness bug.
+them. Its token_secret is never copied. If it has a wake block, the block (its
+region) is copied but its ec2_instance never is: the copy wakes the instance
+given by --set wake.ec2_instance, or else its host when that is an instance id,
+so --set host=i-… alone yields a wakeable runner.
 
 --set takes a dotted path to a scalar field and may repeat:
 
@@ -148,6 +151,10 @@ Fails if the name is taken. The gateway is not signalled; reload it when ready.`
 			overrides, err := parseSets(sets)
 			if err != nil {
 				return err
+			}
+			setKeys := map[string]bool{}
+			for _, o := range overrides {
+				setKeys[strings.Join(o.path, ".")] = true
 			}
 
 			unlock, err := lockConfig(cfgPath)
@@ -182,10 +189,17 @@ Fails if the name is taken. The gateway is not signalled; reload it when ready.`
 				for _, k := range identityKeys {
 					deleteKey(block, k)
 				}
+				if w := mappingValue(block, "wake"); w != nil && w.Kind == yaml.MappingNode {
+					deleteKey(w, "ec2_instance")
+				}
 				for _, o := range overrides {
 					if err := setPath(block, o.path, o.value); err != nil {
 						return fmt.Errorf("--set %s: %w", strings.Join(o.path, "."), err)
 					}
+				}
+				_, hostSet := setKeys["host"]
+				if err := fillWakeFromHost(block, hostSet); err != nil {
+					return err
 				}
 				key := &yaml.Node{
 					Kind: yaml.ScalarNode, Tag: "!!str", Value: name,
@@ -336,6 +350,34 @@ another backend (Parameter Store) are the caller's to delete.`,
 	cmd.Flags().BoolVar(&missingOK, "missing-ok", false, "succeed when the runner is already gone (for idempotent callers)")
 	cmd.Flags().BoolVar(&keepSecret, "keep-secret", false, "leave the runner's secret file in gateway.secrets_dir")
 	return cmd
+}
+
+// fillWakeFromHost completes a copied wake block. A template declares that its
+// copies are wakeable (and in which region) without naming a machine; each copy
+// names its own, either explicitly with --set wake.ec2_instance or — the common
+// case — through its host, when that is an instance id. A wake block left with
+// no instance is an error here rather than a silently unwakeable runner.
+//
+// The host must have been given for this copy: a host inherited from the
+// template would make the copy wake the template's machine.
+func fillWakeFromHost(block *yaml.Node, hostSet bool) error {
+	w := mappingValue(block, "wake")
+	if w == nil || w.Kind != yaml.MappingNode {
+		return nil
+	}
+	if id := mappingValue(w, "ec2_instance"); id != nil && id.Value != "" {
+		return nil
+	}
+	host := nodeMapValue(block, "host")
+	if !hostSet {
+		return errors.New("the template declares wake, so each copy needs its own machine: " +
+			"pass --set host=i-… (or --set wake.ec2_instance=i-…)")
+	}
+	if !config.IsEC2InstanceID(host) {
+		return fmt.Errorf("the template declares wake, but host %q is not an instance id; "+
+			"set --set host=i-… or --set wake.ec2_instance=i-…", host)
+	}
+	return setPath(w, []string{"ec2_instance"}, host)
 }
 
 // ---------------------------------------------------------------------------
