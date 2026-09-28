@@ -123,7 +123,27 @@ type Runner struct {
 	// marginal dollar cost; the scarce resource is the rate-limit window, so
 	// cost reports render them differently rather than as $0.
 	Billing string `yaml:"billing"`
+
+	// Wake, when set, lets the gateway start the runner's host when a message
+	// queues for it while it is offline. Hosts that stop themselves when idle
+	// (per-task boxes) are then as reachable as ones that never sleep: the
+	// message is held, the host boots, the runner connects, the queue drains.
+	Wake *Wake `yaml:"wake"`
 }
+
+// Wake names the machine to start for an offline runner. It is explicit rather
+// than inferred from Host: Host is informational and free-form, and turning a
+// display field into an API target would make a typo a call against the wrong
+// instance.
+type Wake struct {
+	// EC2Instance is the instance id to StartInstances.
+	EC2Instance string `yaml:"ec2_instance"`
+	// Region is the instance's region. Empty uses the gateway's ambient region.
+	Region string `yaml:"region"`
+}
+
+// Wakeable reports whether the gateway can start this runner's host.
+func (r *Runner) Wakeable() bool { return r != nil && r.Wake != nil && r.Wake.EC2Instance != "" }
 
 // EffectiveTokenSecret is the enrollment secret name for a runner.
 func (r *Runner) EffectiveTokenSecret(name string) string {

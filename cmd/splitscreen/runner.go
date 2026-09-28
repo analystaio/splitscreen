@@ -116,6 +116,7 @@ chat credentials, no forge credentials, and no routing configuration.`,
 	f.StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
 
 	_ = cmd.MarkFlagRequired("name")
+	cmd.AddCommand(runnerManageCmds()...)
 	return cmd
 }
 

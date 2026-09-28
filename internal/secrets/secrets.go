@@ -176,6 +176,21 @@ func (c Chain) Names() []string {
 	return out
 }
 
+// Invalidator is implemented by backends that cache. Dropping a name forces
+// the next Get to the source.
+type Invalidator interface {
+	Invalidate(name string)
+}
+
+// Invalidate forwards to every backend in the chain that caches.
+func (c Chain) Invalidate(name string) {
+	for _, b := range c {
+		if inv, ok := b.(Invalidator); ok {
+			inv.Invalidate(name)
+		}
+	}
+}
+
 func isNotFound(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "secrets: not found")
 }
