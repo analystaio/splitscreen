@@ -73,6 +73,12 @@ runners:
       forge:
         # An empty list denies every repository.
         repos: ["acme/app"]
+    # If the host stops itself when idle, let a message start it again. The
+    # gateway calls ec2:StartInstances when a message queues for this runner
+    # while it is offline, at most once per two minutes, and says so in-thread.
+    # wake:
+    #   ec2_instance: i-0a1b2c3d4e5f67890
+    #   region: us-east-2    # default: gateway.secrets_ssm.region, then ambient
 
   review:
     display: { name: "Ada Review", icon: ":mag:" }
@@ -87,6 +93,31 @@ runners:
     harness_env:    ANTHROPIC_API_KEY
     policy:
       deny: ["Bash(git push*)"]      # review runner reads; it does not publish
+      forge:
+        repos: ["acme/app"]
+
+  # A template for short-lived task machines, routed nowhere. A control plane
+  # copies it per machine rather than writing YAML:
+  #
+  #   splitscreen runner add box-foo --template box-template \
+  #     --set display.name="Box foo" --set host=i-0123456789abcdef0 \
+  #     --set wake.ec2_instance=i-0123456789abcdef0 --set wake.region=us-east-2
+  #   splitscreen route add C0BOXFOO01 box-foo
+  #   systemctl reload splitscreen-gateway
+  #
+  # token_secret and wake are never copied from a template.
+  box-template:
+    display: { name: "Box", icon: ":package:" }
+    cwd:     /var/www/app
+    harness: claude-code
+    bundle:  staging
+    idle:    30m
+    billing: subscription
+    policy:
+      auto_approve: true
+      deny:
+        - "Bash(git push --force*)"
+        - "Bash(terraform apply*)"
       forge:
         repos: ["acme/app"]
 
