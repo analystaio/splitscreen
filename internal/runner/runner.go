@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -53,6 +54,11 @@ type Options struct {
 	// new session would exceed it, the longest-idle session between turns is
 	// reaped first, and the new session is refused if none is evictable.
 	MaxSessions int
+	// StateDir, if set, is a persistent directory that keeps what the harness
+	// learns across bundle pushes and reboots: its per-project memory and
+	// session transcripts, skills it creates, a durable notes file, and the
+	// thread -> session map. Empty keeps the runtime wholly ephemeral.
+	StateDir string
 
 	Logger *slog.Logger
 }
@@ -71,8 +77,10 @@ type Runner struct {
 	sendMu sync.Mutex
 
 	sessions sync.Map // thread id -> *threadSession
-	pending  sync.Map // request id -> chan any
-	blobs    sync.Map // blob id -> *inboundBlob
+	// sessionIDs persists resume points when a state dir is configured.
+	sessionIDs *sessionIndex
+	pending    sync.Map // request id -> chan any
+	blobs      sync.Map // blob id -> *inboundBlob
 
 }
 
@@ -104,7 +112,14 @@ func New(o Options) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{opts: o, log: o.Logger, adapter: a}, nil
+	if o.StateDir != "" && !filepath.IsAbs(o.StateDir) {
+		return nil, fmt.Errorf("runner: state dir %q must be an absolute path", o.StateDir)
+	}
+	idx, err := loadSessionIndex(o.StateDir)
+	if err != nil {
+		return nil, err
+	}
+	return &Runner{opts: o, log: o.Logger, adapter: a, sessionIDs: idx}, nil
 }
 
 // DefaultRuntimeRoot prefers tmpfs so nothing lands on persistent disk.

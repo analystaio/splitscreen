@@ -106,9 +106,15 @@ func (r *Runner) applyBundle(push *protocol.BundlePush) error {
 		}
 	}
 
+	if r.opts.StateDir != "" {
+		if err := r.prepareState(staging); err != nil {
+			return err
+		}
+	}
+
 	// Memory files are concatenated into the harness's user-memory file. The
 	// gateway keeps them as separate reviewable sources; the harness wants one.
-	if err := assembleMemory(staging); err != nil {
+	if err := assembleMemory(staging, r.localMemoryPath()); err != nil {
 		return err
 	}
 
@@ -176,13 +182,15 @@ func (r *Runner) linkHostCredentials(root string) error {
 }
 
 // assembleMemory concatenates memory/*.md into CLAUDE.md, base layer first.
-func assembleMemory(root string) error {
-	dir := filepath.Join(root, "memory")
+//
+// With a durable notes file (localPath non-empty), a section pointing at it —
+// and its contents, if any — follows the bundle's memory. The pointer is
+// there even when the file does not exist yet, because the agent can only keep
+// a note somewhere it has been told about.
+func assembleMemory(root, localPath string) error {
+	dir := filepath.Join(root, bundleMemoryDir)
 	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	names := make([]string, 0, len(entries))
@@ -204,10 +212,28 @@ func assembleMemory(root string) error {
 		}
 		b.Write(content)
 	}
+
+	if localPath != "" {
+		local, err := os.ReadFile(localPath)
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "%s\n\nEverything above is rebuilt from the deployment bundle, so edits to this file are lost. "+
+			"To keep a note across restarts and redeploys, add it to `%s`; it is appended here at the start of every session.\n",
+			durableNotesHeader, localPath)
+		if len(strings.TrimSpace(string(local))) > 0 {
+			b.WriteString("\n")
+			b.Write(local)
+		}
+	}
+
 	if b.Len() == 0 {
 		return nil
 	}
-	return os.WriteFile(filepath.Join(root, "CLAUDE.md"), []byte(b.String()), 0o600)
+	return writeFileAtomic(filepath.Join(root, assembledMemory), []byte(b.String()), 0o600)
 }
 
 // writeMCPConfig assembles the final server set.
