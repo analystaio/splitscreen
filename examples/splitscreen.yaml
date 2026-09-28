@@ -100,12 +100,12 @@ runners:
   # copies it per machine rather than writing YAML:
   #
   #   splitscreen runner add box-foo --template box-template \
-  #     --set display.name="Box foo" --set host=i-0123456789abcdef0 \
-  #     --set wake.ec2_instance=i-0123456789abcdef0 --set wake.region=us-east-2
+  #     --set display.name="Box foo" --set host=i-0123456789abcdef0
   #   splitscreen route add C0BOXFOO01 box-foo
   #   systemctl reload splitscreen-gateway
   #
-  # token_secret and wake are never copied from a template.
+  # token_secret is never copied. The wake block below is, minus any instance:
+  # each copy wakes its own host (or --set wake.ec2_instance).
   box-template:
     display: { name: "Box", icon: ":package:" }
     cwd:     /var/www/app
@@ -113,6 +113,7 @@ runners:
     bundle:  staging
     idle:    30m
     billing: subscription
+    wake: { region: us-east-2 }
     policy:
       auto_approve: true
       deny:

@@ -25,6 +25,7 @@ runners:
     harness: claude-code
     token_secret: runner-box-template
     idle: 45m
+    wake: { region: us-east-2 }
     policy:
       auto_approve: true
       deny: ["Bash(terraform apply*)"]
@@ -111,13 +112,13 @@ func TestRunnerAddRefusesExistingAndInvalid(t *testing.T) {
 	before, _ := os.ReadFile(path)
 
 	cases := [][]string{
-		{"runner", "add", "staging", "--template", "box-template"},                        // name taken
-		{"runner", "add", "box-x", "--template", "nope"},                                  // unknown template
-		{"runner", "add", "box-x", "--template", "box-template", "--set", "cwd=relative"}, // fails validation
-		{"runner", "add", "box-x", "--template", "box-template", "--set", "wake.ec2_instance=bogus"},
-		{"runner", "add", "box-x", "--template", "box-template", "--set", "policy.deny=x"},  // not a scalar
-		{"runner", "add", "box-x", "--template", "box-template", "--set", "nonsense_key=1"}, // unknown key
-		{"runner", "add", "Box_X", "--template", "box-template"},                            // bad slug
+		{"runner", "add", "staging", "--template", "box-template"},                                                             // name taken
+		{"runner", "add", "box-x", "--template", "nope"},                                                                       // unknown template
+		{"runner", "add", "box-x", "--template", "box-template", "--set", "host=i-0123456789abcdef0", "--set", "cwd=relative"}, // fails validation
+		{"runner", "add", "box-x", "--template", "box-template", "--set", "host=i-0123456789abcdef0", "--set", "wake.ec2_instance=bogus"},
+		{"runner", "add", "box-x", "--template", "box-template", "--set", "host=i-0123456789abcdef0", "--set", "policy.deny=x"},  // not a scalar
+		{"runner", "add", "box-x", "--template", "box-template", "--set", "host=i-0123456789abcdef0", "--set", "nonsense_key=1"}, // unknown key
+		{"runner", "add", "Box_X", "--template", "box-template"},                                                                 // bad slug
 	}
 	for _, args := range cases {
 		if err := runCmd(t, append(args, "-c", path)...); err == nil {
@@ -136,7 +137,7 @@ func TestRunnerAddRefusesShadowingSecretFile(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("old"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := runCmd(t, "runner", "add", "box-foo", "--template", "box-template", "-c", path)
+	err := runCmd(t, "runner", "add", "box-foo", "--template", "box-template", "--set", "host=i-0123456789abcdef0", "-c", path)
 	if err == nil || !strings.Contains(err.Error(), "shadow") {
 		t.Fatalf("expected a shadowing error, got %v", err)
 	}
@@ -147,7 +148,7 @@ func TestRunnerAddRefusesShadowingSecretFile(t *testing.T) {
 
 func TestRunnerRemoveDropsRoutesAndSecret(t *testing.T) {
 	path, secrets := writeTemplateConfig(t)
-	if err := runCmd(t, "runner", "add", "box-foo", "--template", "box-template", "-c", path); err != nil {
+	if err := runCmd(t, "runner", "add", "box-foo", "--template", "box-template", "--set", "host=i-0123456789abcdef0", "-c", path); err != nil {
 		t.Fatal(err)
 	}
 	for _, ch := range []string{"C222", "C333"} {
@@ -200,7 +201,7 @@ func TestRunnerAddConcurrentEditsAllLand(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			name := fmt.Sprintf("box-%d", i)
-			errs <- runCmd(t, "runner", "add", name, "--template", "box-template", "-c", path)
+			errs <- runCmd(t, "runner", "add", name, "--template", "box-template", "--set", "host=i-0123456789abcdef0", "-c", path)
 			errs <- runCmd(t, "route", "add", fmt.Sprintf("C9%02d", i), name, "-c", path)
 		}(i)
 	}
@@ -225,7 +226,7 @@ func TestRunnerAddConcurrentEditsAllLand(t *testing.T) {
 
 func TestEnrollTokenFromStdin(t *testing.T) {
 	path, secrets := writeTemplateConfig(t)
-	if err := runCmd(t, "runner", "add", "box-foo", "--template", "box-template", "-c", path); err != nil {
+	if err := runCmd(t, "runner", "add", "box-foo", "--template", "box-template", "--set", "host=i-0123456789abcdef0", "-c", path); err != nil {
 		t.Fatal(err)
 	}
 
@@ -274,5 +275,45 @@ func TestScalarTag(t *testing.T) {
 		if got := scalarTag(in); got != want {
 			t.Errorf("scalarTag(%q) = %s, want %s", in, got, want)
 		}
+	}
+}
+
+// The control plane passes only --set host=i-…: the template's wake block makes
+// the copy wakeable, targeting the copy's own host and never anything the
+// template named.
+func TestRunnerAddWakesItsOwnHost(t *testing.T) {
+	path, _ := writeTemplateConfig(t)
+	if err := runCmd(t, "runner", "add", "box-foo", "--template", "box-template",
+		"--set", "host=i-0123456789abcdef0", "-c", path); err != nil {
+		t.Fatalf("runner add: %v", err)
+	}
+	r := loadConfig(t, path).Runners["box-foo"]
+	if !r.Wakeable() || r.Wake.EC2Instance != "i-0123456789abcdef0" || r.Wake.Region != "us-east-2" {
+		t.Fatalf("wake = %+v, want the copy's host in the template's region", r.Wake)
+	}
+
+	// A host inherited from the template must never become a wake target.
+	if err := runCmd(t, "runner", "add", "box-inh", "--template", "box-template", "-c", path); err == nil {
+		t.Fatal("expected an error when the copy names no machine of its own")
+	}
+
+	// A host that is not an instance id cannot be woken: refuse, don't guess.
+	before, _ := os.ReadFile(path)
+	if err := runCmd(t, "runner", "add", "box-bar", "--template", "box-template",
+		"--set", "host=somebox", "-c", path); err == nil {
+		t.Fatal("expected an error for a wake template with a non-instance host")
+	}
+	after, _ := os.ReadFile(path)
+	if string(before) != string(after) {
+		t.Error("a refused add modified the file")
+	}
+
+	// An explicit instance wins over the host.
+	if err := runCmd(t, "runner", "add", "box-baz", "--template", "box-template",
+		"--set", "host=somebox", "--set", "wake.ec2_instance=i-0fedcba9876543210", "-c", path); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadConfig(t, path).Runners["box-baz"].Wake.EC2Instance; got != "i-0fedcba9876543210" {
+		t.Errorf("wake instance = %q", got)
 	}
 }
