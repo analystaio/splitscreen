@@ -191,6 +191,7 @@ func (g *Gateway) Reload() error {
 		return err
 	}
 	old := g.cfg.Load()
+	g.invalidateRunnerSecrets(old, c)
 	g.applyConfig(c)
 	g.log.Info("config reloaded", "runners", len(c.Runners), "routes", len(c.Routes))
 	for _, w := range c.Warnings {
@@ -221,6 +222,48 @@ func (g *Gateway) Reload() error {
 		}
 	}
 	return nil
+}
+
+// invalidateRunnerSecrets drops cached enrollment secrets for every runner a
+// reload adds, removes, or re-points. Runners come and go with their machines,
+// and a name can be reused: without this, a cached token (or a cached miss,
+// from a lookup made before the parameter was written) would outlive the change
+// by the cache TTL, and a freshly registered runner would be refused for minutes
+// for no visible reason.
+func (g *Gateway) invalidateRunnerSecrets(old, next *config.Config) {
+	inv, ok := g.secrets.(secrets.Invalidator)
+	if !ok {
+		return
+	}
+	names := map[string]bool{}
+	secretOf := func(c *config.Config, name string) string {
+		if c == nil {
+			return ""
+		}
+		if r, ok := c.Runners[name]; ok && r != nil {
+			return r.EffectiveTokenSecret(name)
+		}
+		return ""
+	}
+	for name := range next.Runners {
+		names[name] = true
+	}
+	if old != nil {
+		for name := range old.Runners {
+			names[name] = true
+		}
+	}
+	for name := range names {
+		before, after := secretOf(old, name), secretOf(next, name)
+		if before == after {
+			continue
+		}
+		for _, s := range []string{before, after} {
+			if s != "" {
+				inv.Invalidate(s)
+			}
+		}
+	}
 }
 
 // Run starts every surface and blocks until ctx is cancelled. The runner-facing

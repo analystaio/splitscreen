@@ -10,12 +10,15 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -31,7 +34,7 @@ import (
 
 func enrollCmd() *cobra.Command {
 	var cfgPath string
-	var write, force bool
+	var write, force, tokenStdin, printToken bool
 
 	cmd := &cobra.Command{
 		Use:   "enroll <runner>",
@@ -42,18 +45,29 @@ up under.
 Run this on the gateway host with --write and it stores the gateway's half
 itself, leaving only the runner's half to carry across. That halves the number
 of times the token is copied, which matters: a truncated paste fails later as an
-opaque "enrollment token does not match" with nothing else to go on.`,
+opaque "enrollment token does not match" with nothing else to go on.
+
+For automation:
+
+  --token-stdin   use the token read from stdin instead of generating one, so a
+                  caller that already holds it (and has put it wherever the
+                  runner will fetch it) can store the gateway's half
+  --print-token   print only the token, nothing else, for capture by a script
+
+A caller that writes the token straight into the gateway's Parameter Store
+prefix (<secrets_ssm.prefix>/runner-<name>) does not need this command at all:
+the gateway reads it on the runner's next connection. Note that a file of the
+same name in gateway.secrets_dir wins over Parameter Store.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runnerName := args[0]
 			if !protocol.ValidSlug(runnerName) {
 				return fmt.Errorf("splitscreen: %q is not a valid runner name (lowercase letters, digits, dashes)", runnerName)
 			}
-			var raw [32]byte
-			if _, err := rand.Read(raw[:]); err != nil {
+			token, err := enrollmentToken(tokenStdin)
+			if err != nil {
 				return err
 			}
-			token := base64.RawURLEncoding.EncodeToString(raw[:])
 			secretName := "runner-" + runnerName
 
 			var stored string
@@ -62,12 +76,14 @@ opaque "enrollment token does not match" with nothing else to go on.`,
 				if err != nil {
 					return fmt.Errorf("--write needs a valid config to find the secret store:\n%w", err)
 				}
-				if _, ok := cfg.Runners[runnerName]; !ok {
+				rc, ok := cfg.Runners[runnerName]
+				if !ok {
 					// The gateway refuses a hello from a runner it has no config
 					// for, so enrolling one that does not exist yet only produces
 					// a confusing failure later.
 					return fmt.Errorf("no runner named %q is configured; add it to %s first", runnerName, cfgPath)
 				}
+				secretName = rc.EffectiveTokenSecret(runnerName)
 				if cfg.Gateway.SecretsDir == "" {
 					return fmt.Errorf("--write needs gateway.secrets_dir; for the ssm backend, put the value at %s/%s instead",
 						cfg.Gateway.SecretsSSM.Prefix, secretName)
@@ -82,6 +98,11 @@ opaque "enrollment token does not match" with nothing else to go on.`,
 				stored = dest
 			}
 
+			if printToken {
+				fmt.Println(token)
+				return nil
+			}
+
 			fmt.Printf("runner:      %s\n", runnerName)
 			fmt.Printf("secret name: %s\n", secretName)
 			if stored != "" {
@@ -94,10 +115,12 @@ opaque "enrollment token does not match" with nothing else to go on.`,
 				fmt.Printf("  printf %%s '%s' > $SECRETS_DIR/%s && chmod 600 $SECRETS_DIR/%s\n\n",
 					token, secretName, secretName)
 			}
-			fmt.Printf("On the runner:\n")
-			fmt.Printf("  printf %%s '%s' > ~/.config/splitscreen/%s.token\n", token, runnerName)
-			fmt.Printf("  chmod 600 ~/.config/splitscreen/%s.token\n", runnerName)
-			fmt.Printf("  systemctl --user enable --now splitscreen-runner@%s\n\n", runnerName)
+			if !tokenStdin {
+				fmt.Printf("On the runner:\n")
+				fmt.Printf("  printf %%s '%s' > ~/.config/splitscreen/%s.token\n", token, runnerName)
+				fmt.Printf("  chmod 600 ~/.config/splitscreen/%s.token\n", runnerName)
+				fmt.Printf("  systemctl --user enable --now splitscreen-runner@%s\n\n", runnerName)
+			}
 			if stored != "" {
 				fmt.Printf("The gateway picks up the new secret on its next read; no reload is needed\n")
 				fmt.Printf("unless you also changed the config.\n")
@@ -108,7 +131,38 @@ opaque "enrollment token does not match" with nothing else to go on.`,
 	cmd.Flags().StringVarP(&cfgPath, "config", "c", defaultConfigPath, "path to the configuration file")
 	cmd.Flags().BoolVar(&write, "write", false, "store the gateway's half in the configured secrets directory")
 	cmd.Flags().BoolVar(&force, "force", false, "replace an existing secret")
+	cmd.Flags().BoolVar(&tokenStdin, "token-stdin", false, "read the token from stdin instead of generating one")
+	cmd.Flags().BoolVar(&printToken, "print-token", false, "print only the token")
 	return cmd
+}
+
+// minTokenLen rejects tokens too short to be worth the name. A generated one is
+// 43 characters; a supplied one must at least not be guessable.
+const minTokenLen = 32
+
+// enrollmentToken generates a token, or reads one supplied on stdin. Stdin rather
+// than a flag, because argv is visible to every user on the box and lands in
+// shell history and remote-command logs.
+func enrollmentToken(fromStdin bool) (string, error) {
+	if !fromStdin {
+		var raw [32]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return "", err
+		}
+		return base64.RawURLEncoding.EncodeToString(raw[:]), nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+	if err != nil {
+		return "", fmt.Errorf("splitscreen: read token: %w", err)
+	}
+	token := strings.TrimSpace(string(raw))
+	if len(token) < minTokenLen {
+		return "", fmt.Errorf("splitscreen: the token on stdin is %d characters; at least %d are required", len(token), minTokenLen)
+	}
+	if strings.ContainsAny(token, " \t\r\n'\"") {
+		return "", errors.New("splitscreen: the token on stdin contains whitespace or quotes")
+	}
+	return token, nil
 }
 
 // ---------------------------------------------------------------------------

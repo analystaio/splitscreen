@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,8 +45,10 @@ func runCmd(t *testing.T, args ...string) error {
 	t.Helper()
 	root := rootCommand()
 	root.SetArgs(args)
-	root.SetOut(os.NewFile(0, os.DevNull))
-	root.SetErr(os.NewFile(0, os.DevNull))
+	// io.Discard, not os.NewFile(0, ...): that wraps fd 0, and its finalizer
+	// closes whatever fd 0 has become by the time it runs.
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
 	return root.Execute()
 }
 

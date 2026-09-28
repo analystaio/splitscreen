@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -95,6 +96,12 @@ route without an invite looks exactly like no route at all.`,
 				channel, runner = args[0], args[1]
 			}
 
+			unlock, err := lockConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+
 			cfg, err := config.Load(cfgPath)
 			if err != nil {
 				return fmt.Errorf("the existing config is not valid; fix it before adding a route:\n%w", err)
@@ -153,6 +160,12 @@ on that runner's disk — so this only affects new conversations.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			channel := args[0]
 
+			unlock, err := lockConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+
 			var found bool
 			updated, err := editRoutes(cfgPath, func(seq *yaml.Node) error {
 				kept := seq.Content[:0]
@@ -188,6 +201,10 @@ on that runner's disk — so this only affects new conversations.`,
 }
 
 const defaultConfigPath = "splitscreen.yaml"
+
+// configLockTimeout bounds how long an edit waits for a concurrent one. Edits
+// take milliseconds; anything holding the lock this long is stuck.
+const configLockTimeout = 30 * time.Second
 
 // policyCmd is what the removed "Always" button would have done, except it
 // leaves a diff. Permission posture is a security boundary; widening it should
@@ -248,6 +265,12 @@ func policyRuleCmd(kind string) *cobra.Command {
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			runner, rule := args[0], args[1]
+			unlock, err := lockConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+
 			cfg, err := config.Load(cfgPath)
 			if err != nil {
 				return fmt.Errorf("the existing config is not valid; fix it first:\n%w", err)
@@ -288,71 +311,49 @@ func policyRuleCmd(kind string) *cobra.Command {
 // editRunnerPolicy appends a rule through the node tree, so the file's comments
 // survive the edit.
 func editRunnerPolicy(path, runner, kind, rule string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("config: %w", err)
-	}
-	if len(doc.Content) == 0 {
-		return nil, fmt.Errorf("config: %s is empty", path)
-	}
-	runners := mappingValue(doc.Content[0], "runners")
-	if runners == nil {
-		return nil, fmt.Errorf("config: no runners section")
-	}
-	rc := mappingValue(runners, runner)
-	if rc == nil {
-		return nil, fmt.Errorf("config: runner %q not found in the file", runner)
-	}
-	policy := mappingValue(rc, "policy")
-	if policy == nil {
-		rc.Content = append(rc.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "policy"},
-			&yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"})
-		policy = rc.Content[len(rc.Content)-1]
-	}
-	list := mappingValue(policy, kind)
-	if list == nil {
-		policy.Content = append(policy.Content,
-			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: kind},
-			&yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
-		list = policy.Content[len(policy.Content)-1]
-	}
-	list.Content = append(list.Content,
-		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: rule, Style: yaml.DoubleQuotedStyle})
-
-	var out strings.Builder
-	enc := yaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return nil, err
-	}
-	if err := enc.Close(); err != nil {
-		return nil, err
-	}
-	return []byte(out.String()), nil
+	return editDoc(path, func(root *yaml.Node) error {
+		runners := mappingValue(root, "runners")
+		if runners == nil {
+			return fmt.Errorf("config: no runners section")
+		}
+		rc := mappingValue(runners, runner)
+		if rc == nil {
+			return fmt.Errorf("config: runner %q not found in the file", runner)
+		}
+		policy := mappingValue(rc, "policy")
+		if policy == nil {
+			rc.Content = append(rc.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "policy"},
+				&yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"})
+			policy = rc.Content[len(rc.Content)-1]
+		}
+		list := mappingValue(policy, kind)
+		if list == nil {
+			policy.Content = append(policy.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: kind},
+				&yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
+			list = policy.Content[len(policy.Content)-1]
+		}
+		list.Content = append(list.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: rule, Style: yaml.DoubleQuotedStyle})
+		return nil
+	})
 }
 
 // editRoutes applies fn to the routes sequence and returns the re-serialized
-// document. Editing the node tree rather than round-tripping through structs is
-// what keeps the file's comments — which carry most of its explanation — intact.
+// document.
 func editRoutes(path string, fn func(seq *yaml.Node) error) ([]byte, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("config: %w", err)
-	}
-	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("config: %s is not a YAML mapping", path)
-	}
-	root := doc.Content[0]
+	return editDoc(path, func(root *yaml.Node) error {
+		seq, err := routesSeq(root)
+		if err != nil {
+			return err
+		}
+		return fn(seq)
+	})
+}
 
+// routesSeq returns the routes sequence, creating an empty one if absent.
+func routesSeq(root *yaml.Node) (*yaml.Node, error) {
 	seq := mappingValue(root, "routes")
 	if seq == nil {
 		root.Content = append(root.Content,
@@ -364,8 +365,26 @@ func editRoutes(path string, fn func(seq *yaml.Node) error) ([]byte, error) {
 	if seq.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("config: routes is not a list")
 	}
+	return seq, nil
+}
 
-	if err := fn(seq); err != nil {
+// editDoc applies fn to the document's root mapping and returns the
+// re-serialized document. Editing the node tree rather than round-tripping
+// through structs is what keeps the file's comments — which carry most of its
+// explanation — intact.
+func editDoc(path string, fn func(root *yaml.Node) error) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("config: %s is not a YAML mapping", path)
+	}
+	if err := fn(doc.Content[0]); err != nil {
 		return nil, err
 	}
 
@@ -427,6 +446,10 @@ func writeConfig(path string, data []byte) error {
 
 	if info, err := os.Stat(path); err == nil {
 		if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+			tmp.Close()
+			return err
+		}
+		if err := preserveOwner(tmp, info); err != nil {
 			tmp.Close()
 			return err
 		}
