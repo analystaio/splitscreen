@@ -89,6 +89,7 @@ func threadDirName(threadID string) string {
 func (r *Runner) sessionFor(ctx context.Context, threadID string) (*threadSession, error) {
 	v, _ := r.sessions.LoadOrStore(threadID, &threadSession{
 		threadID:     threadID,
+		sessionID:    r.sessionIDs.get(threadID),
 		lastActivity: time.Now(),
 	})
 	ts := v.(*threadSession)
@@ -107,6 +108,10 @@ func (r *Runner) sessionFor(ctx context.Context, threadID string) (*threadSessio
 	configDir := r.bundle.ConfigDir()
 	if configDir == "" {
 		return nil, fmt.Errorf("runner: no bundle has been materialized yet")
+	}
+	if err := r.refreshMemory(configDir); err != nil {
+		// Stale notes are better than no session.
+		r.log.Warn("refreshing durable notes failed", "err", err)
 	}
 
 	dir := filepath.Join(r.opts.RuntimeRoot, r.opts.Name, "threads", threadDirName(threadID))
@@ -291,6 +296,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			ts.sessionMu.Lock()
 			ts.sessionID = ev.SessionID
 			ts.sessionMu.Unlock()
+			r.rememberSession(ts.threadID, ev.SessionID)
 
 		case harness.EventToolUse:
 			_ = r.send(ctx, &protocol.ToolStart{
@@ -325,6 +331,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			}
 			sid := ts.sessionID
 			ts.sessionMu.Unlock()
+			r.rememberSession(ts.threadID, sid)
 			ts.endTurn()
 			_ = r.send(ctx, &protocol.Done{
 				ThreadID: ts.threadID, TurnID: turn,
@@ -375,6 +382,15 @@ func (r *Runner) endSession(threadID string) {
 	// !new means start over, so drop the resume point too.
 	ts.sessionID = ""
 	ts.sessionMu.Unlock()
+	r.rememberSession(threadID, "")
+}
+
+// rememberSession persists a thread's resume point, when there is a state dir
+// to persist it in.
+func (r *Runner) rememberSession(threadID, sessionID string) {
+	if err := r.sessionIDs.set(threadID, sessionID); err != nil {
+		r.log.Warn("persisting session id failed", "thread", threadID, "err", err)
+	}
 }
 
 // makeRoom enforces MaxSessions before a new harness process starts.
