@@ -275,6 +275,25 @@ drive which machines and working trees is not a decision that should be typed by
 whoever happens to be in the channel; `!rebind` exists for the thread-level case
 because that has no blast radius.
 
+## Who is asking
+
+Several people, and several channels, can share one runner. Every message
+therefore reaches the agent with a one-line header in front of it:
+
+```
+[Slack #box-foo (C0123ABCD) · from Jane Doe <jane@example.com> (U0456EFGH)]
+```
+
+It is on every turn, not just the first, because people take turns in a thread.
+Names are resolved by the gateway and cached for an hour; the ids are always
+there, so a missing scope shortens the header rather than dropping it. The
+header is input to the agent only and is never posted back. Turn it off per
+runner with `context_header: false`.
+
+On Slack, names need `users:read`, emails `users:read.email`, and channel names
+`channels:read` (public) or `groups:read` (private). Each one missing degrades
+its part to the bare id; a failed lookup is retried after ten minutes.
+
 ## Sleeping runners
 
 A runner whose host stops itself when idle can name the machine to start:
@@ -336,7 +355,7 @@ route before removing the runner.
 
 Runner fields: `display` (`name`, `icon`, `show_activity`), `host`, `cwd`, `harness`,
 `bundle`, `model`, `idle`, `max_concurrent`, `policy`, `token_secret`, `harness_secret`,
-`harness_env`, `billing`, and `wake` (`ec2_instance`, `region`).
+`harness_env`, `billing`, `context_header`, and `wake` (`ec2_instance`, `region`).
 See [`examples/splitscreen.yaml`](examples/splitscreen.yaml) and the field comments in `config/config.go`.
 
 Enforced invariants include: one channel maps to exactly one runner, at most one

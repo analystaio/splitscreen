@@ -392,6 +392,17 @@ start, so a note does not wait for a push.
 The first push with a state dir adopts the previous tmpfs `projects/`, so switching an
 existing runner over does not cost its threads their resume points.
 
+**Who is asking.** Each message reaches the agent prefixed with one line naming the
+surface, channel, and sender — `[Slack #box-foo (C…) · from Jane Doe <jane@…> (U…)]`
+— rendered by the gateway, which knows the surface, and carried in the message's
+`context` field for the runner to put in front of the text. It repeats on every turn
+because a thread is shared. The runner treats the field as optional (an older gateway
+sends none) and an older runner ignores it. Resolved names are user-controlled prompt
+text, so the renderer strips newlines and brackets from them. Name lookups are cached
+(an hour; ten minutes for failures) and bounded to a two-second call, so a missing
+scope or a slow API degrades the header to ids and never holds up a message.
+`context_header: false` turns it off per runner.
+
 ### 7.1 Starting a conversation
 
 **Starting** a thread requires addressing the bot; **continuing** one does not.
