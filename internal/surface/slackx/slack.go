@@ -354,6 +354,41 @@ func (s *Surface) Upload(ctx context.Context, u surface.Upload) error {
 	return nil
 }
 
+// SetStatus shows or clears Slack's native working indicator in a thread
+// ("<app> is working…"), via assistant.threads.setStatus. It needs only
+// chat:write and works in ordinary channel threads, not just assistant DMs.
+// Slack clears it on its own after two minutes without a message, and whenever
+// the app posts in the thread; the gateway refreshes it for as long as a turn
+// runs.
+func (s *Surface) SetStatus(ctx context.Context, st surface.Status) error {
+	p := slack.AssistantThreadsSetStatusParameters{
+		ChannelID: st.Channel,
+		ThreadTS:  st.Thread,
+		Status:    st.Text,
+		Username:  st.Persona.Name,
+	}
+	if st.Persona.Icon != "" {
+		if strings.HasPrefix(st.Persona.Icon, "http") {
+			p.IconURL = st.Persona.Icon
+		} else {
+			p.IconEmoji = st.Persona.Icon
+		}
+	}
+	err := s.api.SetAssistantThreadsStatusContext(ctx, p)
+	if err == nil {
+		return nil
+	}
+	var se slack.SlackErrorResponse
+	if errors.As(err, &se) {
+		switch se.Err {
+		case "ratelimited", "internal_error", "fatal_error", "service_unavailable", "request_timeout":
+			return err
+		}
+		return fmt.Errorf("%w: %s", surface.ErrStatusUnavailable, se.Err)
+	}
+	return err
+}
+
 // Channel reports membership for a routed channel.
 //
 // Slack only delivers message events for conversations the bot has joined, so a

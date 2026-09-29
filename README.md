@@ -275,6 +275,16 @@ drive which machines and working trees is not a decision that should be typed by
 whoever happens to be in the channel; `!rebind` exists for the thread-level case
 because that has no blast radius.
 
+## Working indicator
+
+While a runner has a turn in flight, Slack shows "<app> is working…" in the
+thread (`assistant.threads.setStatus`, which needs only `chat:write`). A message
+waiting on a sleeping machine shows "is starting up…", one waiting on the
+concurrency cap "is waiting for a free slot…". The gateway re-sets it through
+Slack's two-minute expiry and clears it when the turn ends. Set the text with
+`working_status: "is thinking…"` on a runner; `working_status: ""` turns it off.
+A channel where Slack refuses it is logged once and then left alone.
+
 ## Who is asking
 
 Several people, and several channels, can share one runner. Every message
@@ -355,7 +365,8 @@ route before removing the runner.
 
 Runner fields: `display` (`name`, `icon`, `show_activity`), `host`, `cwd`, `harness`,
 `bundle`, `model`, `idle`, `max_concurrent`, `policy`, `token_secret`, `harness_secret`,
-`harness_env`, `billing`, `context_header`, and `wake` (`ec2_instance`, `region`).
+`harness_env`, `billing`, `context_header`, `working_status`, and `wake`
+(`ec2_instance`, `region`).
 See [`examples/splitscreen.yaml`](examples/splitscreen.yaml) and the field comments in `config/config.go`.
 
 Enforced invariants include: one channel maps to exactly one runner, at most one

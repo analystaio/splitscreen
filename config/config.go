@@ -130,6 +130,12 @@ type Runner struct {
 	// cannot credit or answer the right person without it.
 	ContextHeader *bool `yaml:"context_header"`
 
+	// WorkingStatus is the text of the surface's native "working" indicator
+	// while this runner has a turn in flight — rendered by Slack as
+	// "<app> is working…". Unset uses DefaultWorkingStatus; an explicit empty
+	// string turns the indicator off for this runner.
+	WorkingStatus *string `yaml:"working_status"`
+
 	// Wake, when set, lets the gateway start the runner's host when a message
 	// queues for it while it is offline. Hosts that stop themselves when idle
 	// (per-task boxes) are then as reachable as ones that never sleep: the
@@ -146,6 +152,17 @@ type Wake struct {
 	EC2Instance string `yaml:"ec2_instance"`
 	// Region is the instance's region. Empty uses the gateway's ambient region.
 	Region string `yaml:"region"`
+}
+
+// DefaultWorkingStatus is the working-indicator text when a runner sets none.
+const DefaultWorkingStatus = "is working…"
+
+// WorkingText resolves WorkingStatus: the default when unset, "" when off.
+func (r *Runner) WorkingText() string {
+	if r == nil || r.WorkingStatus == nil {
+		return DefaultWorkingStatus
+	}
+	return *r.WorkingStatus
 }
 
 // WantsContextHeader resolves ContextHeader, defaulting to on.

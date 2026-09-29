@@ -314,6 +314,27 @@ judgement about how much detail is useful. And `show_activity: transient` versus
 stops meaning anything, because the surface owns the collapse; only `hidden` still
 suppresses steps.
 
+**The working indicator** is separate from the message and complements it. A surface
+implementing `surface.Statuser` shows a transient line in the thread — on Slack,
+`assistant.threads.setStatus`, rendered "<app> is working…" under the thread, which needs
+only `chat:write` and works in ordinary channel threads. It covers the stretch the plan
+card cannot: from dispatch until the first output, and the quiet gaps after. The
+gateway sets it when a turn is dispatched, as the runner's persona; shows "is starting
+up…" while a message waits on a machine being woken, and "is waiting for a free slot…"
+while it waits on the concurrency cap; and clears it on every way a turn can end — done,
+error, abandoned, stranded, or failed by the disconnect reconciler — before the thread's
+next turn can start, so a clear never lands on top of its successor's set.
+
+Slack expires the indicator after two minutes without a message and clears it whenever
+the app posts in the thread, which the streamed answer does. So a running turn's
+indicator is re-set on its own activity, at most every 30 s, and by a 60 s ticker
+through quiet stretches; a waiting one is kept up for at most ten minutes. All calls go
+through one worker, in order, so nothing on the turn path waits on them. A permanent
+failure (missing scope, a channel the app may not set status in) is logged once and
+latches the indicator off for that channel until restart; transient failures are
+dropped. `working_status` sets the text per runner; an explicit empty string turns it off.
+Slack documents `agents.sessions.setStatus` as the eventual replacement for this method.
+
 ---
 
 ## 7. Sessions and threads

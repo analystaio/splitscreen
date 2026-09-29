@@ -68,6 +68,8 @@ type Gateway struct {
 	// a gateway restart before the runner returns drops them.
 	heldFiles sync.Map
 
+	working *workingTracker
+
 	waker          wake.Starter
 	wakeMu         sync.Mutex
 	wakes          map[string]*wakeState
@@ -150,12 +152,14 @@ func New(o Options) (*Gateway, error) {
 		threadWaiting: map[string][]*queuedTurn{},
 		grants:        newGrantStore(),
 		waker:         o.Waker,
+		working:       newWorkingTracker(),
 		wakes:         map[string]*wakeState{},
 
 		wakeRetryEvery: defaultWakeRetryEvery,
 		wakeRetryFor:   defaultWakeRetryFor,
 	}
 	g.channels.byID = map[string]channelState{}
+	go g.runWorking()
 	if g.surfaces == nil {
 		g.surfaces = map[string]surface.Surface{}
 	}
@@ -353,6 +357,12 @@ func (g *Gateway) Run(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		g.sweepStrandedTurns(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		g.tickWorking(ctx)
 	}()
 
 	wg.Add(1)

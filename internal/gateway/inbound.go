@@ -282,7 +282,9 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 	if err := conn.Send(msg); err != nil {
 		g.log.Error("dispatch failed", "runner", runnerName, "err", err)
 		g.queueMessage(ctx, in, runnerName, turn, msg)
+		return
 	}
+	g.setWorkingForTurn(turn)
 }
 
 // queueMessage persists a message for an offline runner and reports the depth
@@ -316,6 +318,9 @@ func (g *Gateway) queueMessage(ctx context.Context, in surface.Inbound, runner s
 	if rc, ok := cfg.Runners[runner]; ok && rc.Wakeable() {
 		status := g.requestWake(ctx, runner, rc)
 		g.postWakeNotice(ctx, in, runner, personaFor(rc), wakeText(runner, status, depth+1)+held)
+		if status.kind != wakeFailed {
+			g.setWaiting(in, rc, workingStartingText)
+		}
 		return
 	}
 	g.notice(ctx, in, fmt.Sprintf("`%s` is offline — queued (%d waiting).%s", runner, depth+1, held))
@@ -326,6 +331,7 @@ func (g *Gateway) queueMessage(ctx context.Context, in surface.Inbound, runner s
 func (g *Gateway) abandonTurn(ctx context.Context, turn *turnContext, reason string) {
 	g.turns.Delete(turn.TurnID)
 	g.heldFiles.Delete(turn.TurnID)
+	g.clearWorking(turn.ThreadID)
 	_ = g.store.FinishTurn(turn.TurnID, store.TurnError, reason, time.Since(turn.StartedAt).Milliseconds(), 0)
 	g.endThreadTurn(ctx, turn.ThreadID)
 }
@@ -353,6 +359,7 @@ func (g *Gateway) drainQueue(ctx context.Context, conn *Conn) {
 			// silence from a running turn.
 			turn.touch()
 			turn.queued.Store(false)
+			g.setWorkingForTurn(turn)
 		}
 		if err := g.store.DeleteQueued(m.ID); err != nil {
 			g.log.Error("queue delete failed", "id", m.ID, "err", err)
@@ -429,6 +436,7 @@ func (g *Gateway) admit(ctx context.Context, in surface.Inbound, runnerName stri
 	q.waiting = append(q.waiting, qt)
 	pos, active := len(q.waiting), q.active
 	g.queuesMu.Unlock()
+	g.setWaiting(in, rc, workingQueuedText)
 
 	ref, err := g.postQueueNotice(ctx, in, persona, runnerName, pos, active)
 	if err != nil {
