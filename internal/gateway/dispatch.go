@@ -56,6 +56,7 @@ func (g *Gateway) turnFor(turnID string) (*turnContext, bool) {
 	}
 	turn := v.(*turnContext)
 	turn.touch() // any frame referencing the turn is activity; feeds the stranded-turn sweep
+	g.touchWorking(turn.ThreadID)
 	return turn, true
 }
 
@@ -343,7 +344,7 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 	ctx := context.Background()
 	g.turns.Range(func(key, value any) bool {
 		turn := value.(*turnContext)
-		if turn.Runner != runner {
+		if turn.Runner != runner || turn.queued.Load() {
 			return true
 		}
 		g.turns.Delete(key)
@@ -360,6 +361,7 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 				Text: fmt.Sprintf(":warning: `%s` went offline mid-turn. Completed file changes are saved on the runner; message again to pick the session back up — if it is still down, the message will queue and deliver when it returns.", runner),
 			})
 		}
+		g.clearWorking(turn.ThreadID)
 		g.turnSlotFreed(ctx, runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 		return true
@@ -394,7 +396,9 @@ func (g *Gateway) sweepStrandedOnce(ctx context.Context, timeout time.Duration) 
 	n := 0
 	g.turns.Range(func(key, value any) bool {
 		turn := value.(*turnContext)
-		if turn.idle() < timeout {
+		// A queued turn is waiting in a persisted queue for its runner to come
+		// back, not stuck: finalizing it would orphan the message it delivers.
+		if turn.idle() < timeout || turn.queued.Load() {
 			return true
 		}
 		g.turns.Delete(key)
@@ -408,6 +412,7 @@ func (g *Gateway) sweepStrandedOnce(ctx context.Context, timeout time.Duration) 
 		_ = g.store.FinishTurn(turn.TurnID, store.TurnError,
 			"stranded: no activity past timeout (Done lost or misattributed)",
 			time.Since(turn.StartedAt).Milliseconds(), 0)
+		g.clearWorking(turn.ThreadID)
 		g.turnSlotFreed(ctx, turn.Runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 		return true
@@ -624,6 +629,7 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 		g.log.Error("finish turn failed", "turn", fr.TurnID, "err", err)
 	}
 	_ = g.store.TouchThread(turn.ThreadID)
+	g.clearWorking(turn.ThreadID)
 	g.turnSlotFreed(ctx, turn.Runner)
 	g.endThreadTurn(ctx, turn.ThreadID)
 }
@@ -648,6 +654,7 @@ func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error
 		_ = g.store.FinishTurn(fr.TurnID, store.TurnError, fr.Code+": "+fr.Message,
 			time.Since(turn.StartedAt).Milliseconds(), 0)
 		g.turns.Delete(fr.TurnID)
+		g.clearWorking(turn.ThreadID)
 		g.turnSlotFreed(ctx, turn.Runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 	}

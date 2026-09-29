@@ -177,6 +177,16 @@ gateway:
     cache_ttl: 5m
 ```
 
+For automation, the cleanest enrollment is to skip `enroll` entirely: generate the
+token wherever the runner will get it from, and write the gateway's copy to
+`<prefix>/runner-<name>` in Parameter Store. The gateway reads it on the runner's next
+connection; a reload that adds the runner drops any cached value, so there is no TTL to
+wait out — and a failed authentication drops the cached value too, so a runner that
+dialled before its parameter existed gets in on its next retry. Keep in mind that a file of the same name in `secrets_dir` wins —
+`runner add` refuses to proceed while one exists. Where a script does want the local
+store, `enroll <name> --write --token-stdin` stores a token it supplies, and
+`--print-token` prints nothing but the token.
+
 The Parameter Store backend reads with the host's own IAM identity, so there is
 no bootstrap secret on the gateway and every read is attributable in CloudTrail.
 Values are cached briefly because authentication resolves a secret on every
@@ -237,15 +247,114 @@ splitscreen route remove C0123456789
 systemctl reload splitscreen-gateway
 ```
 
+Runners themselves are managed the same way. A control plane that creates a runner
+per task machine copies a template rather than writing YAML:
+
+```sh
+splitscreen runner list [--json]
+splitscreen runner add box-foo --template box-template \
+    --set display.name="Box foo" --set host=i-0123456789abcdef0
+splitscreen route add C0BOXFOO01 box-foo
+systemctl reload splitscreen-gateway
+
+splitscreen runner remove box-foo [--missing-ok]   # also drops its routes
+systemctl reload splitscreen-gateway
+```
+
+`--set` takes a dotted path to a scalar field and creates missing sections; values are
+typed as YAML would read them. `token_secret` is never copied from the template. A
+template's `wake` block is copied without its `ec2_instance`; the copy wakes its own
+`host` when that is an instance id (or whatever `--set wake.ec2_instance` says), so
+`--set host=i-…` alone makes a wakeable runner. `runner remove` removes every route to the runner in the same edit and deletes
+its file in `secrets_dir`; on reload the gateway disconnects it and refuses its token
+from then on. Every edit takes a lock beside the config file, so concurrent invocations
+cannot lose each other's changes, and keeps the file's owner when run as root.
+
 There is deliberately no chat command that mutates routing. Which humans can
 drive which machines and working trees is not a decision that should be typed by
 whoever happens to be in the channel; `!rebind` exists for the thread-level case
 because that has no blast radius.
 
+## Working indicator
+
+While a runner has a turn in flight, Slack shows "<app> is working…" in the
+thread (`assistant.threads.setStatus`, which needs only `chat:write`). A message
+waiting on a sleeping machine shows "is starting up…", one waiting on the
+concurrency cap "is waiting for a free slot…". The gateway re-sets it through
+Slack's two-minute expiry and clears it when the turn ends. Set the text with
+`working_status: "is thinking…"` on a runner; `working_status: ""` turns it off.
+A channel where Slack refuses it is logged once and then left alone.
+
+## Who is asking
+
+Several people, and several channels, can share one runner. Every message
+therefore reaches the agent with a one-line header in front of it:
+
+```
+[Slack #box-foo (C0123ABCD) · from Jane Doe <jane@example.com> (U0456EFGH)]
+```
+
+It is on every turn, not just the first, because people take turns in a thread.
+Names are resolved by the gateway and cached for an hour; the ids are always
+there, so a missing scope shortens the header rather than dropping it. The
+header is input to the agent only and is never posted back. Turn it off per
+runner with `context_header: false`.
+
+On Slack, names need `users:read`, emails `users:read.email`, and channel names
+`channels:read` (public) or `groups:read` (private). Each one missing degrades
+its part to the bare id; a failed lookup is retried after ten minutes.
+
+## Sleeping runners
+
+A runner whose host stops itself when idle can name the machine to start:
+
+```yaml
+runners:
+  box-foo:
+    wake:
+      ec2_instance: i-0123456789abcdef0
+      region: us-east-2            # default: gateway.secrets_ssm.region, then ambient
+```
+
+When a message queues for it while it is offline, the gateway calls
+`ec2:StartInstances` — at most once per runner per two minutes — and posts a visible
+in-thread notice as the runner ("asleep — starting it now"), edited to "awake" when the
+runner connects. A host still shutting down is retried for five minutes; a start that
+fails says why in the thread and leaves the message queued. The gateway's IAM role needs
+`ec2:StartInstances` on those instances; scope it with a tag condition.
+
+Attachments sent to any offline runner are held and delivered when it reconnects,
+unless the gateway restarts first.
+
+## Persistent runtime state
+
+By default a runner's harness config lives on tmpfs and is rebuilt on every bundle push,
+so the agent's own memory, transcripts, and runtime-created skills do not survive a push
+or a reboot. Give the runner a state directory to keep them:
+
+```sh
+splitscreen runner --name box-foo ... --state-dir /home/ubuntu/.local/state/splitscreen/box-foo
+# or SPLITSCREEN_STATE_DIR in the unit's environment file
+```
+
+`projects/` (memory and transcripts) and `skills/` are then symlinked into it,
+`sessions.json` keeps each thread's resume point across restarts, and `CLAUDE.local.md`
+there is appended to the bundle's `CLAUDE.md` at every session start — the one durable
+place for notes. Bundle skills still win on a name clash; bundle memory stays
+bundle-owned.
+
 ## Configuration reference
 
 `splitscreen config check` validates everything and reports every problem at
-once. A config either loads wholly or not at all — a bad edit never partially
+once. With `--resolve`, run as the gateway's user on the gateway host, it also
+resolves every referenced secret through the configured backends, exactly as
+startup does — use it to pre-flight a restart.
+
+At startup a missing surface, forge, harness, or proxied-MCP secret is fatal. A
+missing runner enrollment secret is not: that runner is logged as unenrolled and
+refused until the secret exists, and everything else runs. One box's token — or
+a template runner that is never enrolled at all — must not take every runner
+down. A config either loads wholly or not at all — a bad edit never partially
 applies, including on `SIGHUP` reload.
 
 Validation distinguishes errors from warnings. An error means the config cannot
@@ -253,6 +362,12 @@ work and blocks loading. A warning — a runner with no routes, say — means it
 probably is not what you meant, but it runs; blocking on those would make
 legitimate intermediate states unreachable, such as removing a runner's last
 route before removing the runner.
+
+Runner fields: `display` (`name`, `icon`, `show_activity`), `host`, `cwd`, `harness`,
+`bundle`, `model`, `idle`, `max_concurrent`, `policy`, `token_secret`, `harness_secret`,
+`harness_env`, `billing`, `context_header`, `working_status`, and `wake`
+(`ec2_instance`, `region`).
+See [`examples/splitscreen.yaml`](examples/splitscreen.yaml) and the field comments in `config/config.go`.
 
 Enforced invariants include: one channel maps to exactly one runner, at most one
 DM route, bundle `extends` chains are acyclic, proxied MCP servers declare no
@@ -267,7 +382,14 @@ journalctl -u splitscreen-gateway -f     # structured JSON logs
 ```
 
 Runners run as an unprivileged user (harnesses refuse dangerous permission modes
-as root) with the runtime root on tmpfs. One host can serve several runners:
+as root) with the runtime root on tmpfs, and optionally a persistent state directory
+(see above).
+
+While any turn is in flight a runner keeps `<runtime-root>/<name>/active` (by default
+`$XDG_RUNTIME_DIR/splitscreen/<name>/active`) with an mtime at most 30 s old, and
+removes it when the last turn ends. A host that stops itself when idle can use it to
+tell a long, quiet turn from no turn; treat an mtime older than about a minute as stale,
+since a runner killed mid-turn cannot remove it. One host can serve several runners:
 each gets its own config directory, its own unix socket, and its own persona.
 
 ```sh

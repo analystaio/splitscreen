@@ -251,6 +251,20 @@ func (c *Config) ProxiedServers() []string {
 
 // SecretRefs lists every secret name the config expects to resolve, so startup
 // can fail loudly on a missing one rather than at first use.
+// RunnerTokenSecrets maps each runner enrollment secret to the runner that
+// authenticates with it. These are per-runner by nature: a missing one means
+// that runner cannot connect, not that the gateway cannot run.
+func (c *Config) RunnerTokenSecrets() map[string]string {
+	out := map[string]string{}
+	for name, r := range c.Runners {
+		if r != nil {
+			out[r.EffectiveTokenSecret(name)] = name
+		}
+	}
+	return out
+}
+
+// SecretRefs lists every secret the config references.
 func (c *Config) SecretRefs() []string {
 	seen := map[string]bool{}
 	add := func(n string) {

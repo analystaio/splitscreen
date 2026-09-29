@@ -30,6 +30,12 @@ type turnContext struct {
 	Activity  string
 	StartedAt time.Time
 
+	// queued marks a turn whose message sits in the offline queue. Such a turn
+	// has not started anywhere, so a disconnect cannot have interrupted it:
+	// the reconciler, which fails turns a dropped runner was running, must
+	// leave it for the queue to deliver.
+	queued atomic.Bool
+
 	// lastActivity (unix nanos) is bumped on every upward frame. The stranded-
 	// turn sweep uses it: a turn silent far longer than any real tool call has
 	// been orphaned (its Done was lost or misattributed) and must be finalized.
@@ -233,11 +239,15 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 	g.turns.Store(turn.TurnID, turn)
 
 	msg := &protocol.Message{
-		ThreadID: key,
-		TurnID:   turn.TurnID,
-		Channel:  in.Channel,
-		User:     protocol.UserRef{ID: in.User.ID, Display: in.User.Display},
-		Text:     text,
+		ThreadID:    key,
+		TurnID:      turn.TurnID,
+		Channel:     in.Channel,
+		ChannelName: in.ChannelName,
+		User:        protocol.UserRef{ID: in.User.ID, Display: in.User.Display, Email: in.User.Email},
+		Text:        text,
+	}
+	if rc.WantsContextHeader() {
+		msg.Context = contextHeader(in)
 	}
 
 	conn, online := g.hub.Get(runnerName)
@@ -251,7 +261,8 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 	}
 
 	// Attachments are streamed before the message so the runner has them on disk
-	// by the time it is asked to act.
+	// by the time it is asked to act. For an offline runner they are held and
+	// streamed when the queue drains.
 	if online && len(in.Files) > 0 {
 		atts, err := g.relayFilesToRunner(ctx, conn, turn, in.Files)
 		if err != nil {
@@ -259,44 +270,75 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 			g.notice(ctx, in, "Could not transfer an attachment: "+err.Error())
 		}
 		msg.Attachments = atts
-	} else if len(in.Files) > 0 {
-		g.notice(ctx, in, "Attachments were dropped: `"+runnerName+"` is offline.")
 	}
 
 	if !online {
-		g.queueMessage(ctx, in, runnerName, key, msg)
+		if len(in.Files) > 0 {
+			g.heldFiles.Store(turn.TurnID, in.Files)
+		}
+		g.queueMessage(ctx, in, runnerName, turn, msg)
 		return
 	}
 	if err := conn.Send(msg); err != nil {
 		g.log.Error("dispatch failed", "runner", runnerName, "err", err)
-		g.queueMessage(ctx, in, runnerName, key, msg)
+		g.queueMessage(ctx, in, runnerName, turn, msg)
+		return
 	}
+	g.setWorkingForTurn(turn)
 }
 
 // queueMessage persists a message for an offline runner and reports the depth
 // in-thread, so a runner restart is visible-and-recovered rather than silent
-// data loss.
-func (g *Gateway) queueMessage(ctx context.Context, in surface.Inbound, runner, threadID string, msg *protocol.Message) {
+// data loss. A runner that declares wake has its machine started as well.
+func (g *Gateway) queueMessage(ctx context.Context, in surface.Inbound, runner string, turn *turnContext, msg *protocol.Message) {
 	cfg := g.cfg.Load()
 	depth, _ := g.store.QueueDepth(runner)
 	if cfg.Gateway.QueueLimit > 0 && depth >= cfg.Gateway.QueueLimit {
+		g.abandonTurn(ctx, turn, "queue_full: runner offline and its queue is full")
 		g.notice(ctx, in, fmt.Sprintf("`%s` is offline and its queue is full (%d). This message was dropped.", runner, depth))
 		return
 	}
 	raw, err := protocol.Encode(msg)
 	if err != nil {
 		g.log.Error("encode for queue failed", "err", err)
+		g.abandonTurn(ctx, turn, "queue_failed: "+err.Error())
 		return
 	}
-	if err := g.store.Enqueue(runner, threadID, raw); err != nil {
+	if err := g.store.Enqueue(runner, turn.ThreadID, raw); err != nil {
 		g.log.Error("enqueue failed", "runner", runner, "err", err)
+		g.abandonTurn(ctx, turn, "queue_failed: "+err.Error())
 		return
 	}
-	g.notice(ctx, in, fmt.Sprintf("`%s` is offline — queued (%d waiting).", runner, depth+1))
+	turn.queued.Store(true)
+
+	held := ""
+	if len(in.Files) > 0 {
+		held = " Attachments are held until it connects (a gateway restart before then drops them)."
+	}
+	if rc, ok := cfg.Runners[runner]; ok && rc.Wakeable() {
+		status := g.requestWake(ctx, runner, rc)
+		g.postWakeNotice(ctx, in, runner, personaFor(rc), wakeText(runner, status, depth+1)+held)
+		if status.kind != wakeFailed {
+			g.setWaiting(in, rc, workingStartingText)
+		}
+		return
+	}
+	g.notice(ctx, in, fmt.Sprintf("`%s` is offline — queued (%d waiting).%s", runner, depth+1, held))
+}
+
+// abandonTurn finalizes a turn whose message never reached any queue, so its
+// thread is not held "running" until the stranded-turn sweep finds it.
+func (g *Gateway) abandonTurn(ctx context.Context, turn *turnContext, reason string) {
+	g.turns.Delete(turn.TurnID)
+	g.heldFiles.Delete(turn.TurnID)
+	g.clearWorking(turn.ThreadID)
+	_ = g.store.FinishTurn(turn.TurnID, store.TurnError, reason, time.Since(turn.StartedAt).Milliseconds(), 0)
+	g.endThreadTurn(ctx, turn.ThreadID)
 }
 
 // drainQueue replays anything accepted while a runner was away.
 func (g *Gateway) drainQueue(ctx context.Context, conn *Conn) {
+	g.wakeConnected(ctx, conn.runner)
 	msgs, err := g.store.Dequeue(conn.runner, 1000)
 	if err != nil {
 		g.log.Error("dequeue failed", "runner", conn.runner, "err", err)
@@ -307,14 +349,61 @@ func (g *Gateway) drainQueue(ctx context.Context, conn *Conn) {
 	}
 	g.log.Info("draining queue", "runner", conn.runner, "count", len(msgs))
 	for _, m := range msgs {
-		if err := conn.SendRawJSON(m.Frame); err != nil {
+		frame, turn := g.withHeldFiles(ctx, conn, m.Frame)
+		if err := conn.SendRawJSON(frame); err != nil {
 			g.log.Error("queue drain send failed", "runner", conn.runner, "err", err)
 			return
+		}
+		if turn != nil {
+			// Its clock starts now: time spent waiting for the runner is not
+			// silence from a running turn.
+			turn.touch()
+			turn.queued.Store(false)
+			g.setWorkingForTurn(turn)
 		}
 		if err := g.store.DeleteQueued(m.ID); err != nil {
 			g.log.Error("queue delete failed", "id", m.ID, "err", err)
 		}
 	}
+}
+
+// withHeldFiles relays any attachments held for a queued message and returns
+// the frame rewritten to reference them, plus the message's live turn if the
+// gateway still has one.
+func (g *Gateway) withHeldFiles(ctx context.Context, conn *Conn, frame []byte) ([]byte, *turnContext) {
+	f, err := protocol.Decode(frame, protocol.DirDown)
+	if err != nil {
+		return frame, nil
+	}
+	msg, ok := f.(*protocol.Message)
+	if !ok {
+		return frame, nil
+	}
+	v, ok := g.turns.Load(msg.TurnID)
+	if !ok {
+		return frame, nil
+	}
+	turn := v.(*turnContext)
+	held, ok := g.heldFiles.LoadAndDelete(msg.TurnID)
+	if !ok {
+		return frame, turn
+	}
+	atts, err := g.relayFilesToRunner(ctx, conn, turn, held.([]surface.File))
+	if err != nil {
+		g.log.Error("held attachment relay failed", "turn", turn.TurnID, "err", err)
+		if srf, ok := g.surfaceFor(turn.Surface); ok {
+			_, _ = srf.Post(ctx, surface.Post{
+				Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona,
+				Text: "Could not transfer a held attachment: " + err.Error(),
+			})
+		}
+	}
+	msg.Attachments = append(msg.Attachments, atts...)
+	out, err := protocol.Encode(msg)
+	if err != nil {
+		return frame, turn
+	}
+	return out, turn
 }
 
 // admit applies the runner's concurrency cap. It returns false when a slot is
@@ -347,6 +436,7 @@ func (g *Gateway) admit(ctx context.Context, in surface.Inbound, runnerName stri
 	q.waiting = append(q.waiting, qt)
 	pos, active := len(q.waiting), q.active
 	g.queuesMu.Unlock()
+	g.setWaiting(in, rc, workingQueuedText)
 
 	ref, err := g.postQueueNotice(ctx, in, persona, runnerName, pos, active)
 	if err != nil {

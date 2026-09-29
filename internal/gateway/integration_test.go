@@ -24,15 +24,37 @@ import (
 
 // fakeSurface records what the gateway would have posted.
 type fakeSurface struct {
-	mu       sync.Mutex
-	posts    []surface.Post
-	updates  []surface.Post
-	prompts  []surface.Prompt
-	resolved []string
-	uploads  []string
-	handler  surface.Handler
-	channels map[string]surface.ChannelInfo
-	seq      int
+	mu        sync.Mutex
+	posts     []surface.Post
+	updates   []surface.Post
+	prompts   []surface.Prompt
+	resolved  []string
+	uploads   []string
+	handler   surface.Handler
+	channels  map[string]surface.ChannelInfo
+	seq       int
+	statuses  []surface.Status
+	statusErr func(surface.Status) error
+}
+
+func (f *fakeSurface) SetStatus(_ context.Context, st surface.Status) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.statuses = append(f.statuses, st)
+	if f.statusErr != nil {
+		return f.statusErr(st)
+	}
+	return nil
+}
+
+func (f *fakeSurface) statusTexts() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, len(f.statuses))
+	for i, st := range f.statuses {
+		out[i] = st.Channel + ":" + st.Text
+	}
+	return out
 }
 
 func (f *fakeSurface) Name() string { return "test" }

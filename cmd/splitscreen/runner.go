@@ -31,6 +31,7 @@ func runnerCmd() *cobra.Command {
 		runtimeRoot string
 		idle        time.Duration
 		maxSessions int
+		stateDir    string
 		logLevel    string
 	)
 
@@ -79,6 +80,7 @@ chat credentials, no forge credentials, and no routing configuration.`,
 				RuntimeRoot:        runtimeRoot,
 				IdleTimeout:        idle,
 				MaxSessions:        maxSessions,
+				StateDir:           stateDir,
 				Logger:             log,
 			})
 			if err != nil {
@@ -90,7 +92,8 @@ chat credentials, no forge credentials, and no routing configuration.`,
 
 			log.Info("runner starting",
 				"name", name, "gateway", gatewayURL, "cwd", cwd,
-				"harness", harnessName, "idle", idle, "max_sessions", maxSessions)
+				"harness", harnessName, "idle", idle, "max_sessions", maxSessions,
+				"state_dir", stateDir)
 			return r.Run(ctx)
 		},
 	}
@@ -113,9 +116,14 @@ chat credentials, no forge credentials, and no routing configuration.`,
 	f.DurationVar(&idle, "idle", 30*time.Minute, "kill a session after this much silence; it resumes on the next message")
 	f.IntVar(&maxSessions, "max-sessions", envInt("SPLITSCREEN_MAX_SESSIONS", 0),
 		"cap on resident harness processes; at the cap the longest-idle session between turns is reaped, and if none exists the new session is refused (0 = unlimited)")
+	f.StringVar(&stateDir, "state-dir", os.Getenv("SPLITSCREEN_STATE_DIR"),
+		"persistent directory for what the agent accumulates — per-project memory, session transcripts, "+
+			"skills it creates, durable notes (CLAUDE.local.md) — so they survive bundle pushes and reboots; "+
+			"empty keeps the runtime wholly on tmpfs")
 	f.StringVar(&logLevel, "log-level", "info", "debug, info, warn, or error")
 
 	_ = cmd.MarkFlagRequired("name")
+	cmd.AddCommand(runnerManageCmds()...)
 	return cmd
 }
 

@@ -3,11 +3,20 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/avarant/splitscreen/protocol"
 )
+
+var (
+	ec2InstanceID = regexp.MustCompile(`^i-[0-9a-f]{8}([0-9a-f]{9})?$`)
+	awsRegion     = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-\d$`)
+)
+
+// IsEC2InstanceID reports whether s has the shape of an EC2 instance id.
+func IsEC2InstanceID(s string) bool { return ec2InstanceID.MatchString(s) }
 
 // ValidationError collects every problem in a config rather than stopping at
 // the first. An operator editing routing should see all of it in one pass, not
@@ -136,6 +145,20 @@ func (c *Config) validateRunners(p *problems) {
 		}
 		if r.Policy.AutoApprove && len(r.Policy.Approvers) > 0 {
 			p.warnf("runner %q sets approvers but also auto_approve, so no prompt is ever posted and the approver list has no effect", name)
+		}
+		if r.Wake != nil {
+			switch {
+			case r.Wake.EC2Instance == "":
+				// Legitimate on a template: `runner add` fills it from the new
+				// runner's host. Anywhere else it means "wake" was meant and
+				// will not happen.
+				p.warnf("runner %q declares wake with no ec2_instance; it will not be woken (fine for a template)", name)
+			case !IsEC2InstanceID(r.Wake.EC2Instance):
+				p.addf("runner %q: wake.ec2_instance %q is not an EC2 instance id (i-…)", name, r.Wake.EC2Instance)
+			}
+			if r.Wake.Region != "" && !awsRegion.MatchString(r.Wake.Region) {
+				p.addf("runner %q: wake.region %q is not an AWS region", name, r.Wake.Region)
+			}
 		}
 		for _, repo := range r.Policy.Forge.Repos {
 			if strings.Count(repo, "/") != 1 || strings.HasPrefix(repo, "/") || strings.HasSuffix(repo, "/") {

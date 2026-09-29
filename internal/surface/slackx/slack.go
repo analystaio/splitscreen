@@ -35,6 +35,8 @@ type Surface struct {
 	// stops paying a failed round trip per turn to rediscover it.
 	noStream atomic.Bool
 
+	dir *directory
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -52,6 +54,7 @@ func New(botToken, appToken string) (*Surface, error) {
 	return &Surface{
 		api:  api,
 		sock: socketmode.New(api),
+		dir:  newDirectory(api),
 	}, nil
 }
 
@@ -150,7 +153,20 @@ func (s *Surface) handleEvent(ctx context.Context, h surface.Handler, api slacke
 	// ev.Message rather than ev.Text — reading it too early makes "@bot look at
 	// this" with a file attached indistinguishable from an unaddressed drop.
 	in.Addressed = in.IsDM || strings.Contains(in.Text, "<@"+s.selfID+">")
+	s.enrich(ctx, &in)
 	h.OnMessage(ctx, in)
+}
+
+// enrich adds the sender's name and email and the channel's name, so the agent
+// knows who is asking and where. Best effort: see directory.
+func (s *Surface) enrich(ctx context.Context, in *surface.Inbound) {
+	if s.dir == nil {
+		return
+	}
+	in.User.Display, in.User.Email = s.dir.user(ctx, in.User.ID)
+	if !in.IsDM {
+		in.ChannelName = s.dir.channel(ctx, in.Channel)
+	}
 }
 
 func (s *Surface) inboundFile(f slack.File) surface.File {
@@ -338,6 +354,41 @@ func (s *Surface) Upload(ctx context.Context, u surface.Upload) error {
 	return nil
 }
 
+// SetStatus shows or clears Slack's native working indicator in a thread
+// ("<app> is working…"), via assistant.threads.setStatus. It needs only
+// chat:write and works in ordinary channel threads, not just assistant DMs.
+// Slack clears it on its own after two minutes without a message, and whenever
+// the app posts in the thread; the gateway refreshes it for as long as a turn
+// runs.
+func (s *Surface) SetStatus(ctx context.Context, st surface.Status) error {
+	p := slack.AssistantThreadsSetStatusParameters{
+		ChannelID: st.Channel,
+		ThreadTS:  st.Thread,
+		Status:    st.Text,
+		Username:  st.Persona.Name,
+	}
+	if st.Persona.Icon != "" {
+		if strings.HasPrefix(st.Persona.Icon, "http") {
+			p.IconURL = st.Persona.Icon
+		} else {
+			p.IconEmoji = st.Persona.Icon
+		}
+	}
+	err := s.api.SetAssistantThreadsStatusContext(ctx, p)
+	if err == nil {
+		return nil
+	}
+	var se slack.SlackErrorResponse
+	if errors.As(err, &se) {
+		switch se.Err {
+		case "ratelimited", "internal_error", "fatal_error", "service_unavailable", "request_timeout":
+			return err
+		}
+		return fmt.Errorf("%w: %s", surface.ErrStatusUnavailable, se.Err)
+	}
+	return err
+}
+
 // Channel reports membership for a routed channel.
 //
 // Slack only delivers message events for conversations the bot has joined, so a
@@ -368,6 +419,9 @@ func (s *Surface) Channel(ctx context.Context, id string) (surface.ChannelInfo, 
 	}
 
 	info.Name = ch.Name
+	if s.dir != nil {
+		s.dir.rememberChannel(id, ch.Name)
+	}
 	if ch.IsMember {
 		info.Membership = surface.MembershipJoined
 	} else {

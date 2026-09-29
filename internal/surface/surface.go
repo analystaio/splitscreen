@@ -7,6 +7,7 @@ package surface
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 
@@ -17,6 +18,8 @@ import (
 type User struct {
 	ID      string
 	Display string
+	// Email is filled when the surface can read it; empty otherwise.
+	Email string
 }
 
 // Ref identifies a posted message so it can be edited in place. Streaming
@@ -47,6 +50,9 @@ type Inbound struct {
 	// be routed to a channel dedicated to the bot.
 	Addressed bool
 	Files     []File
+	// ChannelName is the human name of Channel ("box-foo"), when the surface
+	// could resolve it. Empty for a DM, or when resolution failed.
+	ChannelName string
 }
 
 // File is an attachment on an inbound message. Open is called at most once and
@@ -144,6 +150,28 @@ type Stream interface {
 // streaming into a channel.
 type Streamer interface {
 	OpenStream(ctx context.Context, p Post) (Stream, error)
+}
+
+// Status is a transient indicator shown in a thread while something happens
+// there — "is working…". Empty Text clears it.
+type Status struct {
+	Channel string
+	Thread  string
+	Text    string
+	Persona Persona
+}
+
+// ErrStatusUnavailable wraps a status failure that will not go away by
+// retrying — a missing scope, a channel the app may not set status in. The
+// gateway stops trying for that channel; other errors are treated as transient.
+var ErrStatusUnavailable = errors.New("status indicator unavailable")
+
+// Statuser is implemented by surfaces that can show a working indicator in a
+// thread. Optional, like Streamer: the gateway checks for it and does without.
+// Surfaces that expire the indicator on their own are refreshed by the gateway
+// for as long as the work lasts.
+type Statuser interface {
+	SetStatus(ctx context.Context, s Status) error
 }
 
 // Prompt is a permission request rendered as interactive controls.

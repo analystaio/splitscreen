@@ -236,6 +236,7 @@ func (h *HelloAck) Validate() error {
 type UserRef struct {
 	ID      string `json:"id"`
 	Display string `json:"display,omitempty"`
+	Email   string `json:"email,omitempty"`
 }
 
 // Attachment references a file the gateway is about to stream down. Bytes never
@@ -263,6 +264,14 @@ type Message struct {
 	// Command carries a recognized control word (new, rebind, runner) already
 	// parsed by the gateway, so runners do not each reimplement the syntax.
 	Command string `json:"command,omitempty"`
+	// ChannelName is the channel's human name, when the surface resolved it.
+	ChannelName string `json:"channel_name,omitempty"`
+	// Context is a one-line header saying where the message came from and who
+	// sent it, rendered by the gateway (which knows the surface) for the runner
+	// to put in front of Text. Empty when the runner's config turns it off.
+	// Optional in both directions: an older runner ignores it, and a newer
+	// runner given none sends Text alone.
+	Context string `json:"context,omitempty"`
 }
 
 func (*Message) Type() FrameType      { return TypeMessage }

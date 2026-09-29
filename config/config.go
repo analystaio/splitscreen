@@ -123,7 +123,55 @@ type Runner struct {
 	// marginal dollar cost; the scarce resource is the rate-limit window, so
 	// cost reports render them differently rather than as $0.
 	Billing string `yaml:"billing"`
+
+	// ContextHeader controls whether each message reaches the agent prefixed
+	// with a one-line header naming the surface, channel, and sender. Default
+	// on: several people and channels can share one runner, and the agent
+	// cannot credit or answer the right person without it.
+	ContextHeader *bool `yaml:"context_header"`
+
+	// WorkingStatus is the text of the surface's native "working" indicator
+	// while this runner has a turn in flight — rendered by Slack as
+	// "<app> is working…". Unset uses DefaultWorkingStatus; an explicit empty
+	// string turns the indicator off for this runner.
+	WorkingStatus *string `yaml:"working_status"`
+
+	// Wake, when set, lets the gateway start the runner's host when a message
+	// queues for it while it is offline. Hosts that stop themselves when idle
+	// (per-task boxes) are then as reachable as ones that never sleep: the
+	// message is held, the host boots, the runner connects, the queue drains.
+	Wake *Wake `yaml:"wake"`
 }
+
+// Wake names the machine to start for an offline runner. It is explicit rather
+// than inferred from Host: Host is informational and free-form, and turning a
+// display field into an API target would make a typo a call against the wrong
+// instance.
+type Wake struct {
+	// EC2Instance is the instance id to StartInstances.
+	EC2Instance string `yaml:"ec2_instance"`
+	// Region is the instance's region. Empty uses the gateway's ambient region.
+	Region string `yaml:"region"`
+}
+
+// DefaultWorkingStatus is the working-indicator text when a runner sets none.
+const DefaultWorkingStatus = "is working…"
+
+// WorkingText resolves WorkingStatus: the default when unset, "" when off.
+func (r *Runner) WorkingText() string {
+	if r == nil || r.WorkingStatus == nil {
+		return DefaultWorkingStatus
+	}
+	return *r.WorkingStatus
+}
+
+// WantsContextHeader resolves ContextHeader, defaulting to on.
+func (r *Runner) WantsContextHeader() bool {
+	return r == nil || r.ContextHeader == nil || *r.ContextHeader
+}
+
+// Wakeable reports whether the gateway can start this runner's host.
+func (r *Runner) Wakeable() bool { return r != nil && r.Wake != nil && r.Wake.EC2Instance != "" }
 
 // EffectiveTokenSecret is the enrollment secret name for a runner.
 func (r *Runner) EffectiveTokenSecret(name string) string {

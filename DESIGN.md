@@ -240,6 +240,27 @@ claims, unknown runner references, duplicate runner names, or a `host` that matc
 registered instance. Configured-but-never-connected runners are surfaced prominently: a
 typo'd runner name should read as a red row, not as "the bot is ignoring me."
 
+**Editing it.** Routes and runners are edited through the CLI (`route add|remove`,
+`runner add|remove|list`, `policy allow|deny`), which edits the YAML node tree so
+comments survive, validates the whole result before writing, and serializes concurrent
+edits with an `flock` beside the file. That last part exists for control planes that
+create and destroy short-lived runners — one per task machine — and may register two at
+once: without it, both would read the same file and the second rename would silently
+drop the first edit.
+
+`runner add <name> --template <runner>` copies an existing definition (typically one
+kept for the purpose and routed nowhere) and overrides scalar fields by dotted path.
+`token_secret` is never copied, because it identifies exactly one runner. A wake target
+is the same kind of thing, so a template's `wake` block is copied without its
+`ec2_instance`, and the copy's comes from `--set wake.ec2_instance` or, failing that, from
+its `host` when that is an instance id — never from the template.
+`runner remove` drops the runner and every route to it in one edit — a route to a missing
+runner is invalid, so neither can go first — and deletes its secrets-directory file. On
+reload the gateway closes a removed runner's connection, refuses its token from then on
+(an unconfigured runner cannot authenticate, whatever it presents), purges its offline
+queue, and invalidates cached enrollment secrets for every runner the reload added,
+removed, or re-pointed, so a reused name is never judged against a stale token.
+
 ### 6.1 Personas
 
 Distinct visible identities come from `chat.postMessage` with `username` and `icon_url`
@@ -293,6 +314,27 @@ judgement about how much detail is useful. And `show_activity: transient` versus
 stops meaning anything, because the surface owns the collapse; only `hidden` still
 suppresses steps.
 
+**The working indicator** is separate from the message and complements it. A surface
+implementing `surface.Statuser` shows a transient line in the thread — on Slack,
+`assistant.threads.setStatus`, rendered "<app> is working…" under the thread, which needs
+only `chat:write` and works in ordinary channel threads. It covers the stretch the plan
+card cannot: from dispatch until the first output, and the quiet gaps after. The
+gateway sets it when a turn is dispatched, as the runner's persona; shows "is starting
+up…" while a message waits on a machine being woken, and "is waiting for a free slot…"
+while it waits on the concurrency cap; and clears it on every way a turn can end — done,
+error, abandoned, stranded, or failed by the disconnect reconciler — before the thread's
+next turn can start, so a clear never lands on top of its successor's set.
+
+Slack expires the indicator after two minutes without a message and clears it whenever
+the app posts in the thread, which the streamed answer does. So a running turn's
+indicator is re-set on its own activity, at most every 30 s, and by a 60 s ticker
+through quiet stretches; a waiting one is kept up for at most ten minutes. All calls go
+through one worker, in order, so nothing on the turn path waits on them. A permanent
+failure (missing scope, a channel the app may not set status in) is logged once and
+latches the indicator off for that channel until restart; transient failures are
+dropped. `working_status` sets the text per runner; an explicit empty string turns it off.
+Slack documents `agents.sessions.setStatus` as the eventual replacement for this method.
+
 ---
 
 ## 7. Sessions and threads
@@ -313,7 +355,74 @@ runner's disk. Consequences:
 **Durability.** The gateway persists inbound messages *before* dispatch. If a runner is
 offline the message queues (bounded) and the gateway replies in-thread with the queue
 depth. A runner deploy or reboot becomes visible-and-recovered rather than silently
-dropping messages.
+dropping messages. Attachments sent while a runner is away are held in gateway memory
+and relayed when the queue drains; a gateway restart in between loses them, and the
+notice says so. A queued turn is *waiting*, not stuck, so neither the disconnect
+reconciler nor the stranded-turn sweep finalizes it — either would orphan the message the
+queue later delivers.
+
+**Waking a sleeping runner.** A runner whose host stops itself when idle declares the
+machine to start:
+
+```yaml
+runners:
+  box-foo:
+    wake: { ec2_instance: i-0123456789abcdef0, region: us-east-2 }
+```
+
+When a message queues for it while it is offline, the gateway calls `StartInstances`
+(at most once per runner per two minutes — a burst of messages is one boot) and posts a
+visible notice as the runner's persona: *"`box-foo` is asleep — starting it now. Your
+message is queued and runs as soon as it connects."* The notice is edited when the
+outcome changes and again when the runner connects. A host caught mid-shutdown — which
+EC2 refuses to start, and which is exactly when someone messages a box that has just
+idled out — is retried every 15 s for five minutes. A failed start is reported in-thread
+and leaves the message queued.
+
+The target is an explicit field rather than `host` reinterpreted: `host` is
+informational, and turning a display field into an API target would make a typo a call
+against the wrong machine.
+
+### 7.2 Persistent runtime state
+
+The materialized config directory is rebuilt on every bundle push and lives on tmpfs
+(§10). That is right for credentials and for everything the bundle owns, and wrong for
+what the agent *learns*: its per-project memory, its session transcripts, the skills it
+writes. A runner that forgets the project every redeploy relearns it at the operators'
+expense, and one that loses its transcripts cannot resume a thread after a reboot.
+
+A runner started with `--state-dir` (or `SPLITSCREEN_STATE_DIR`) keeps those on
+persistent disk. Off by default.
+
+```
+<state-dir>/
+├── projects/            ← symlinked as config/projects: memory + transcripts
+├── skills/              ← symlinked as config/skills: bundle skills + runtime ones
+├── CLAUDE.local.md      ← durable notes, appended to CLAUDE.md
+├── sessions.json        ← thread → session id, so --resume survives a restart
+└── .bundle-skills.json  ← which skills the bundle owns
+```
+
+Ownership stays sharp. Bundle skills are rewritten on every push and win a name clash;
+skills the bundle stops shipping are removed; anything else in `skills/` was created at
+runtime and is left alone. `CLAUDE.md` is still assembled from the bundle — the durable
+notes file is appended after it, under a short section telling the agent that edits to
+`CLAUDE.md` are lost and where to put a note instead. It is re-read at every session
+start, so a note does not wait for a push.
+
+The first push with a state dir adopts the previous tmpfs `projects/`, so switching an
+existing runner over does not cost its threads their resume points.
+
+**Who is asking.** Each message reaches the agent prefixed with one line naming the
+surface, channel, and sender — `[Slack #box-foo (C…) · from Jane Doe <jane@…> (U…)]`
+— rendered by the gateway, which knows the surface, and carried in the message's
+`context` field for the runner to put in front of the text. It repeats on every turn
+because a thread is shared. The runner treats the field as optional (an older gateway
+sends none) and an older runner ignores it. Resolved names are user-controlled prompt
+text, so the renderer strips newlines and brackets from them. Name lookups are cached
+(an hour; ten minutes for failures) and bounded to a two-second call, so a missing
+scope or a slow API degrades the header to ids and never holds up a message.
+`context_header: false` turns it off per runner.
 
 ### 7.1 Starting a conversation
 
@@ -575,6 +684,9 @@ adapter knows they mean "materialize a config directory." A Codex adapter materi
 whatever Codex wants. Do not invent a universal agent-memory abstraction — that is the
 trap that makes multi-harness support lowest-common-denominator.
 
+With `--state-dir` (§7.2), `projects/` and `skills/` in that tree are symlinks to
+persistent disk and `CLAUDE.md` gains a durable-notes tail; everything else is as above.
+
 **Secrets are referenced, not embedded.** Bundles name secrets; the gateway resolves them
 from its secret backend at materialization time. Otherwise the versioned, diffable,
 reviewable config becomes a secret store and the credential model unravels at the last
@@ -812,6 +924,9 @@ cloud-specific.
 | Forge token denied by policy | Git operation fails with an explicit message, logged with the attempted repo |
 | Harness credential expired | Runner reports auth failure upward; gateway warns on the surface with the runner name |
 | Channel re-pointed | Existing threads keep their runner with a one-time notice; `!rebind` to move |
+| Wakeable runner asleep | Message queues; gateway starts the machine (rate-limited) and edits an in-thread notice through to "awake" |
+| Wake fails (IAM, capacity, missing instance) | Reason posted in-thread; message stays queued for whenever the runner next connects |
+| Runner removed with messages queued | Queue purged, queued turns closed out in-thread on reload |
 
 ---
 
