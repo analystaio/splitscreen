@@ -242,7 +242,7 @@ func (r *Runner) handleMessage(ctx context.Context, msg *protocol.Message) {
 	ts.setTurn(msg.TurnID)
 	r.touchActive()
 
-	in := harness.Input{Text: msg.Text}
+	in := harness.Input{Text: withContext(msg)}
 	for _, att := range msg.Attachments {
 		data, path, ok := r.takeBlob(att.BlobID)
 		if !ok {
@@ -552,4 +552,17 @@ func (r *Runner) CleanupThreads() {
 		}
 		_ = os.RemoveAll(filepath.Join(root, e.Name()))
 	}
+}
+
+// withContext puts the gateway's context header in front of the message text,
+// on its own line, so the agent knows where the message came from and who sent
+// it. The header is input only: nothing here reaches the surface.
+func withContext(msg *protocol.Message) string {
+	if msg.Context == "" {
+		return msg.Text
+	}
+	if msg.Text == "" {
+		return msg.Context
+	}
+	return msg.Context + "\n" + msg.Text
 }

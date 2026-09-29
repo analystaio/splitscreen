@@ -17,6 +17,8 @@ import (
 type User struct {
 	ID      string
 	Display string
+	// Email is filled when the surface can read it; empty otherwise.
+	Email string
 }
 
 // Ref identifies a posted message so it can be edited in place. Streaming
@@ -47,6 +49,9 @@ type Inbound struct {
 	// be routed to a channel dedicated to the bot.
 	Addressed bool
 	Files     []File
+	// ChannelName is the human name of Channel ("box-foo"), when the surface
+	// could resolve it. Empty for a DM, or when resolution failed.
+	ChannelName string
 }
 
 // File is an attachment on an inbound message. Open is called at most once and

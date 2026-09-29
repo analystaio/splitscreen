@@ -124,6 +124,12 @@ type Runner struct {
 	// cost reports render them differently rather than as $0.
 	Billing string `yaml:"billing"`
 
+	// ContextHeader controls whether each message reaches the agent prefixed
+	// with a one-line header naming the surface, channel, and sender. Default
+	// on: several people and channels can share one runner, and the agent
+	// cannot credit or answer the right person without it.
+	ContextHeader *bool `yaml:"context_header"`
+
 	// Wake, when set, lets the gateway start the runner's host when a message
 	// queues for it while it is offline. Hosts that stop themselves when idle
 	// (per-task boxes) are then as reachable as ones that never sleep: the
@@ -140,6 +146,11 @@ type Wake struct {
 	EC2Instance string `yaml:"ec2_instance"`
 	// Region is the instance's region. Empty uses the gateway's ambient region.
 	Region string `yaml:"region"`
+}
+
+// WantsContextHeader resolves ContextHeader, defaulting to on.
+func (r *Runner) WantsContextHeader() bool {
+	return r == nil || r.ContextHeader == nil || *r.ContextHeader
 }
 
 // Wakeable reports whether the gateway can start this runner's host.

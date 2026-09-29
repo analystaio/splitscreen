@@ -239,11 +239,15 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 	g.turns.Store(turn.TurnID, turn)
 
 	msg := &protocol.Message{
-		ThreadID: key,
-		TurnID:   turn.TurnID,
-		Channel:  in.Channel,
-		User:     protocol.UserRef{ID: in.User.ID, Display: in.User.Display},
-		Text:     text,
+		ThreadID:    key,
+		TurnID:      turn.TurnID,
+		Channel:     in.Channel,
+		ChannelName: in.ChannelName,
+		User:        protocol.UserRef{ID: in.User.ID, Display: in.User.Display, Email: in.User.Email},
+		Text:        text,
+	}
+	if rc.WantsContextHeader() {
+		msg.Context = contextHeader(in)
 	}
 
 	conn, online := g.hub.Get(runnerName)
