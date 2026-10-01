@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 func testRunner(t *testing.T) *Runner {

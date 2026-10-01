@@ -3,7 +3,7 @@ package runner
 import (
 	"testing"
 
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 func TestWithContext(t *testing.T) {

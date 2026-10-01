@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 // contextHeader renders the one line the agent sees in front of every message:

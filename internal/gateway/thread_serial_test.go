@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 // TestThreadSerialization: one thread runs one turn at a time; a second message

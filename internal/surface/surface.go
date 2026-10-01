@@ -11,7 +11,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // User is a person on a surface.

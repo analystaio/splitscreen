@@ -13,14 +13,14 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/internal/forge"
-	"github.com/avarant/splitscreen/internal/gateway"
-	"github.com/avarant/splitscreen/internal/secrets"
-	"github.com/avarant/splitscreen/internal/store"
-	"github.com/avarant/splitscreen/internal/surface"
-	"github.com/avarant/splitscreen/internal/surface/slackx"
-	"github.com/avarant/splitscreen/internal/wake"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/internal/forge"
+	"github.com/analystaio/splitscreen/internal/gateway"
+	"github.com/analystaio/splitscreen/internal/secrets"
+	"github.com/analystaio/splitscreen/internal/store"
+	"github.com/analystaio/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/internal/surface/slackx"
+	"github.com/analystaio/splitscreen/internal/wake"
 )
 
 func gatewayCmd() *cobra.Command {

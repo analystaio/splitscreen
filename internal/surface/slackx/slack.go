@@ -19,8 +19,8 @@ import (
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 
-	"github.com/avarant/splitscreen/internal/surface"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // Surface is the Slack adapter.

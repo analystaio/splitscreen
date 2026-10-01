@@ -14,8 +14,8 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // Runner definitions are edited through these commands for the same reason

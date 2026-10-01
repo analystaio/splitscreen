@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	// Registers the Claude Code harness adapter.
-	_ "github.com/avarant/splitscreen/internal/harness/claudecode"
+	_ "github.com/analystaio/splitscreen/internal/harness/claudecode"
 )
 
 // Version is stamped at build time.

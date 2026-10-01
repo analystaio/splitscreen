@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/avarant/splitscreen/config"
+	"github.com/analystaio/splitscreen/config"
 )
 
 const templateConfig = `# Boxes are copies of box-template.

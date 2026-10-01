@@ -12,11 +12,11 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/avarant/splitscreen/config"
+	"github.com/analystaio/splitscreen/config"
 
-	"github.com/avarant/splitscreen/internal/secrets"
-	"github.com/avarant/splitscreen/internal/store"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/secrets"
+	"github.com/analystaio/splitscreen/internal/store"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // ServeRunners starts the runner-facing WebSocket listener and blocks until ctx

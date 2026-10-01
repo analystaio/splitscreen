@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/avarant/splitscreen/internal/harness"
+	"github.com/analystaio/splitscreen/internal/harness"
 )
 
 // newParser wires a session's stdout parser to a scripted stream, with a

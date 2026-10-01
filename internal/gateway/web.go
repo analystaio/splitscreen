@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/avarant/splitscreen/internal/store"
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/internal/store"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 // The web view is deliberately small: server-rendered HTML embedded in the

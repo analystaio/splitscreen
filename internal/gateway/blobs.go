@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/avarant/splitscreen/internal/store"
-	"github.com/avarant/splitscreen/internal/surface"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/store"
+	"github.com/analystaio/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // relayFilesToRunner downloads attachments with the surface credential and

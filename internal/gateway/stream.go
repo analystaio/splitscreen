@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 // stream is a turn's output as the surface sees it.

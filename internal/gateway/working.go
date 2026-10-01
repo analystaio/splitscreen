@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 // The working indicator: while a thread has a turn in flight (or a message

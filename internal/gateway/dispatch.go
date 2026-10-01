@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/avarant/splitscreen/internal/pricing"
-	"github.com/avarant/splitscreen/internal/store"
-	"github.com/avarant/splitscreen/internal/surface"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/pricing"
+	"github.com/analystaio/splitscreen/internal/store"
+	"github.com/analystaio/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // dispatch routes one decoded frame from a runner.

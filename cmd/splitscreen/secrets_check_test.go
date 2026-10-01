@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/internal/secrets"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/internal/secrets"
 )
 
 const secretsConfig = `

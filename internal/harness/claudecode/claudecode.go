@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/avarant/splitscreen/internal/harness"
+	"github.com/analystaio/splitscreen/internal/harness"
 )
 
 func init() { harness.Register(&Adapter{Binary: "claude"}) }

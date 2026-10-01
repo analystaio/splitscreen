@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/internal/surface"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // streamingSurface is a fakeSurface that can also stream, so the two paths can

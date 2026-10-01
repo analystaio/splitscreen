@@ -38,7 +38,7 @@ agents:
 ## Install
 
 ```sh
-go install github.com/avarant/splitscreen/cmd/splitscreen@latest
+go install github.com/analystaio/splitscreen/cmd/splitscreen@latest
 ```
 
 Or build a static binary:

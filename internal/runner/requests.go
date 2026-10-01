@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/avarant/splitscreen/internal/mcpproxy"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/mcpproxy"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // Everything in this file is a request the runner forwards to the gateway.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/avarant/splitscreen/config"
+	"github.com/analystaio/splitscreen/config"
 )
 
 func TestMatchDeny(t *testing.T) {

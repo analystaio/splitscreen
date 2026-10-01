@@ -9,8 +9,8 @@ import (
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 
-	"github.com/avarant/splitscreen/internal/surface"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 type recordingHandler struct {

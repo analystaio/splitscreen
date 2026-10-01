@@ -24,9 +24,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/internal/harness"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/internal/harness"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // ---------------------------------------------------------------------------

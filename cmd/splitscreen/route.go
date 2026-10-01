@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
-	"github.com/avarant/splitscreen/config"
+	"github.com/analystaio/splitscreen/config"
 )
 
 // Routing is edited through this command rather than by hand so the common case

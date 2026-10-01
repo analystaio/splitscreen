@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/avarant/splitscreen/config"
+	"github.com/analystaio/splitscreen/config"
 )
 
 const baseConfig = `# Splitscreen configuration.

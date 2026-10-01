@@ -15,9 +15,9 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/avarant/splitscreen/internal/harness"
-	_ "github.com/avarant/splitscreen/internal/harness/claudecode"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/harness"
+	_ "github.com/analystaio/splitscreen/internal/harness/claudecode"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // fakeGateway is the other end of a runner connection: it reads frames and lets

@@ -6,9 +6,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/internal/store"
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/internal/store"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 func qInbound(thread, text string) surface.Inbound {

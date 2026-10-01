@@ -10,7 +10,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // ConnState is a runner connection's liveness.

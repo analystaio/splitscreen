@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/avarant/splitscreen/internal/store"
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/internal/store"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 // A routed channel the bot has not joined behaves exactly like an unrouted one:

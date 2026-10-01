@@ -1,4 +1,4 @@
-module github.com/avarant/splitscreen
+module github.com/analystaio/splitscreen
 
 go 1.25.0
 

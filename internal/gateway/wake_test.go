@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/avarant/splitscreen/config"
-	"github.com/avarant/splitscreen/internal/surface"
-	"github.com/avarant/splitscreen/internal/wake"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/config"
+	"github.com/analystaio/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/internal/wake"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // fakeStarter stands in for EC2. Each call pops the next scripted outcome; the

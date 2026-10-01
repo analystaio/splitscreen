@@ -13,8 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/avarant/splitscreen/internal/harness"
-	"github.com/avarant/splitscreen/internal/runner"
+	"github.com/analystaio/splitscreen/internal/harness"
+	"github.com/analystaio/splitscreen/internal/runner"
 )
 
 func runnerCmd() *cobra.Command {

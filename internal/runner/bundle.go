@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // materialized is the on-disk form of a pushed bundle.

@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/avarant/splitscreen/internal/surface"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 func TestContextHeader(t *testing.T) {

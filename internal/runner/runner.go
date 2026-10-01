@@ -25,8 +25,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/avarant/splitscreen/internal/harness"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/harness"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // Options configure a runner.

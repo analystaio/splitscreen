@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/avarant/splitscreen/internal/harness"
+	"github.com/analystaio/splitscreen/internal/harness"
 )
 
 type fakeSession struct {

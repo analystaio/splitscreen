@@ -6,7 +6,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/avarant/splitscreen/config"
+	"github.com/analystaio/splitscreen/config"
 )
 
 // MatchDeny reports whether any rule denies a tool invocation, and which rule

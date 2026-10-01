@@ -11,7 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/avarant/splitscreen/internal/secrets"
+	"github.com/analystaio/splitscreen/internal/secrets"
 )
 
 // recordingSecrets wraps a backend and records invalidations.

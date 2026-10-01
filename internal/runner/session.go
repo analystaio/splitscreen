@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/avarant/splitscreen/internal/harness"
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/internal/harness"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 // threadSession is one harness conversation, keyed on a gateway thread.

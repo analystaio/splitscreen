@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/avarant/splitscreen/config"
+	"github.com/analystaio/splitscreen/config"
 )
 
 // StatusText renders the runner roster.

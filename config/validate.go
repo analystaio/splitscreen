@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/avarant/splitscreen/protocol"
+	"github.com/analystaio/splitscreen/protocol"
 )
 
 var (

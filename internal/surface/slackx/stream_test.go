@@ -8,7 +8,7 @@ import (
 
 	"github.com/slack-go/slack"
 
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 func newPlanStream() *stream {

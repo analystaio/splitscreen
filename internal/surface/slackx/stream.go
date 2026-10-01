@@ -10,7 +10,7 @@ import (
 
 	"github.com/slack-go/slack"
 
-	"github.com/avarant/splitscreen/internal/surface"
+	"github.com/analystaio/splitscreen/internal/surface"
 )
 
 // Slack's streaming methods render a message as it is written: prose types in,
