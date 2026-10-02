@@ -363,11 +363,26 @@ func (r *Runner) resolvePending(id string, v any) {
 	}
 }
 
-// waitFor registers a waiter and blocks for the reply.
-func (r *Runner) waitFor(ctx context.Context, id string) (any, error) {
+// request sends f and blocks for the reply correlated by id.
+//
+// The waiter is registered BEFORE the frame is sent. The other order loses
+// fast replies: the gateway can answer (an auto-approved permission is
+// answered at once) before the waiter exists, resolvePending finds nobody and
+// drops the reply, and the caller waits out its whole deadline for an answer
+// that already came.
+func (r *Runner) request(ctx context.Context, id string, f protocol.Frame) (any, error) {
+	return r.requestVia(ctx, id, func() error { return r.send(ctx, f) })
+}
+
+// requestVia is request with the send step injectable, for tests.
+func (r *Runner) requestVia(ctx context.Context, id string, send func() error) (any, error) {
 	ch := make(chan any, 1)
 	r.pending.Store(id, ch)
 	defer r.pending.Delete(id)
+
+	if err := send(); err != nil {
+		return nil, err
+	}
 
 	select {
 	case <-ctx.Done():
