@@ -85,6 +85,11 @@ type Runner struct {
 	pending       sync.Map // request id -> chan any
 	blobs         sync.Map // blob id -> *inboundBlob
 
+	// plugins are the enabled plugins' directories for the current bundle.
+	plugins pluginSet
+	// credentialHook replaces the gateway round trip for marketplace fetches
+	// (tests only).
+	credentialHook func(ctx context.Context, repo string) (CredentialResult, error)
 }
 
 // New builds a runner.
@@ -332,6 +337,16 @@ func (r *Runner) handleFrame(ctx context.Context, f protocol.Frame) {
 			return
 		}
 		r.preflightMCP(ctx, fr)
+		// Plugins are fetched beside the read loop: the fetch needs a
+		// credential from the gateway, whose reply this loop must be free to read.
+		m, err := readPluginManifest(r.bundle.ConfigDir())
+		if err != nil {
+			r.log.Error("plugin manifest unreadable", "err", err)
+		}
+		st := r.plugins.reset(m != nil)
+		if m != nil {
+			go r.syncPlugins(context.WithoutCancel(ctx), r.bundle.ConfigDir(), st)
+		}
 	case *protocol.Message:
 		go r.handleMessage(context.WithoutCancel(ctx), fr)
 	case *protocol.PermissionResponse:

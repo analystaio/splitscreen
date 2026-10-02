@@ -685,6 +685,22 @@ type MCPServer struct {
 	Env     map[string]string `json:"env,omitempty"`
 }
 
+// PluginManifest is plugins.json in a bundle: the plugins to load, as
+// "name@marketplace", and where each marketplace is. The runner fetches each
+// marketplace at Ref and loads the plugins from that checkout.
+type PluginManifest struct {
+	Plugins      []string               `json:"plugins"`
+	Marketplaces map[string]Marketplace `json:"marketplaces,omitempty"`
+}
+
+type Marketplace struct {
+	Repo string `json:"repo"` // "owner/name" on the forge
+	Ref  string `json:"ref"`
+}
+
+// PluginManifestFile is the bundle path of the manifest.
+const PluginManifestFile = "plugins.json"
+
 type BundleFile struct {
 	// Path is relative to the materialized config directory.
 	Path    string `json:"path"`
@@ -705,6 +721,10 @@ type BundlePush struct {
 	// prompt caches are per-model, so switching mid-session would silently
 	// re-bill the whole conversation at cold-write rates.
 	Model string `json:"model,omitempty"`
+	// LooseMCP lets the harness load MCP servers beyond the bundle's own
+	// (plugins, the working tree). The zero value is strict, so a gateway or
+	// runner that predates the field keeps today's behaviour.
+	LooseMCP bool `json:"loose_mcp,omitempty"`
 	// Secrets are resolved values for names referenced by files and MCP env.
 	// They exist only in the runner's memory and on tmpfs.
 	Secrets map[string]string `json:"secrets,omitempty"`

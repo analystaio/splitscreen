@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -41,6 +42,9 @@ type Config struct {
 	Routes  []Route               `yaml:"routes"`
 	Bundles map[string]*Bundle    `yaml:"bundles"`
 	MCP     map[string]*MCPServer `yaml:"mcp"`
+	// Marketplaces are Claude Code plugin marketplaces in git repositories,
+	// each pinned to a ref. A bundle enables plugins as "name@marketplace".
+	Marketplaces map[string]*Marketplace `yaml:"marketplaces"`
 
 	// Warnings are findings that do not block loading: the config runs, but
 	// probably is not what someone meant. Populated by Validate.
@@ -217,6 +221,19 @@ type Route struct {
 	Runner  string `yaml:"runner"`
 }
 
+// Marketplace is a plugin marketplace in a git repository on the forge.
+//
+// Runners fetch it themselves, at exactly Ref, with a read-only credential the
+// gateway mints for Repo (any runner whose bundle uses the marketplace may read
+// it; nothing else about its forge policy changes). Plugins load from that
+// checkout for each session, so what a runner runs is what the config pins:
+// moving Ref is a reviewable edit, and a new commit on the repo changes nothing
+// until it does.
+type Marketplace struct {
+	Repo string `yaml:"repo"` // "owner/name"
+	Ref  string `yaml:"ref"`  // tag, branch or commit; pin a tag or commit
+}
+
 // Bundle is the harness configuration materialized onto a runner. Contents are
 // interpreted by the harness adapter, not by the gateway: memory files and
 // skills mean something to a Claude Code adapter and something else, or
@@ -225,8 +242,18 @@ type Bundle struct {
 	Extends string   `yaml:"extends"`
 	Memory  []string `yaml:"memory"`
 	Skills  []string `yaml:"skills"`
+	// Plugins are "name@marketplace" entries; the marketplace must be defined.
 	Plugins []string `yaml:"plugins"`
 	MCP     []string `yaml:"mcp"`
+	// StrictMCP, when false, lets the harness load MCP servers from anywhere it
+	// normally would — plugins included — instead of only the bundle's `mcp`
+	// servers. Unset inherits; the default is strict.
+	//
+	// Turning it off is a trade: plugins can bring their own servers (the
+	// standard marketplace shape), but so can the working tree. A headless
+	// session loads a repository's .mcp.json without asking, so any branch the
+	// agent checks out can start a server, outside the permission check.
+	StrictMCP *bool `yaml:"strict_mcp"`
 }
 
 // DefaultIdle applies when a runner does not set one.
@@ -282,13 +309,55 @@ func (c *Config) RunnerFor(channel string, isDM bool) (string, bool) {
 	return "", false
 }
 
+// SplitPlugin splits "name@marketplace". ok is false for any other shape.
+func SplitPlugin(id string) (name, marketplace string, ok bool) {
+	i := strings.LastIndex(id, "@")
+	if i <= 0 || i == len(id)-1 {
+		return "", "", false
+	}
+	return id[:i], id[i+1:], true
+}
+
+// MarketplacesFor returns the marketplaces a resolved bundle's plugins use.
+func (c *Config) MarketplacesFor(rb *ResolvedBundle) map[string]*Marketplace {
+	out := map[string]*Marketplace{}
+	for _, id := range rb.Plugins {
+		if _, m, ok := SplitPlugin(id); ok {
+			if mp, ok := c.Marketplaces[m]; ok {
+				out[m] = mp
+			}
+		}
+	}
+	return out
+}
+
+// MarketplaceReadable reports whether runner may read repo because its bundle
+// uses a marketplace hosted there. That grants a read-only credential only.
+func (c *Config) MarketplaceReadable(runner, repo string) bool {
+	rc, ok := c.Runners[runner]
+	if !ok || rc.Bundle == "" {
+		return false
+	}
+	rb, err := c.ResolveBundle(rc.Bundle)
+	if err != nil {
+		return false
+	}
+	for _, mp := range c.MarketplacesFor(rb) {
+		if strings.EqualFold(mp.Repo, repo) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResolvedBundle is a bundle with its inheritance chain flattened.
 type ResolvedBundle struct {
-	Name    string
-	Memory  []string
-	Skills  []string
-	Plugins []string
-	MCP     []string
+	Name      string
+	Memory    []string
+	Skills    []string
+	Plugins   []string
+	MCP       []string
+	StrictMCP bool
 }
 
 // ResolveBundle flattens an extends chain, base first. Later layers append to
@@ -314,8 +383,11 @@ func (c *Config) ResolveBundle(name string) (*ResolvedBundle, error) {
 		chain = append([]*Bundle{b}, chain...) // prepend: base ends up first
 		cur = b.Extends
 	}
-	out := &ResolvedBundle{Name: name}
+	out := &ResolvedBundle{Name: name, StrictMCP: true}
 	for _, b := range chain {
+		if b.StrictMCP != nil {
+			out.StrictMCP = *b.StrictMCP // the most specific layer that says wins
+		}
 		out.Memory = append(out.Memory, b.Memory...)
 		out.Skills = append(out.Skills, b.Skills...)
 		out.Plugins = append(out.Plugins, b.Plugins...)

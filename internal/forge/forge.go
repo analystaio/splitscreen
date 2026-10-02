@@ -33,10 +33,29 @@ type Credential struct {
 	ExpiresAt time.Time
 }
 
+// Access is what a minted credential may do.
+type Access int
+
+const (
+	// ReadWrite is whatever the provider grants by default: for a GitHub App,
+	// the installation's permissions on that one repository.
+	ReadWrite Access = iota
+	// ReadOnly is repository contents read only — how a runner fetches a plugin
+	// marketplace it must not be able to change.
+	ReadOnly
+)
+
+func (a Access) String() string {
+	if a == ReadOnly {
+		return "read-only"
+	}
+	return "read-write"
+}
+
 // Provider mints credentials for a repository.
 type Provider interface {
 	// Mint returns a credential valid for repo ("owner/name") only.
-	Mint(ctx context.Context, repo string) (Credential, error)
+	Mint(ctx context.Context, repo string, access Access) (Credential, error)
 	Name() string
 }
 
@@ -136,14 +155,17 @@ func SplitRepo(repo string) (owner, name string, err error) {
 // Mint returns an installation token valid only for repo. Tokens live about an
 // hour; they are cached in memory until shortly before expiry and never written
 // to disk on either side of the connection.
-func (g *GitHubApp) Mint(ctx context.Context, repo string) (Credential, error) {
+func (g *GitHubApp) Mint(ctx context.Context, repo string, access Access) (Credential, error) {
 	_, name, err := SplitRepo(repo)
 	if err != nil {
 		return Credential{}, err
 	}
+	// Read-only and read-write tokens for the same repository are different
+	// credentials; one must never be served from the other's cache slot.
+	key := repo + "#" + access.String()
 
 	g.mu.Lock()
-	if c, ok := g.cache[repo]; ok && g.now().Add(5*time.Minute).Before(c.ExpiresAt) {
+	if c, ok := g.cache[key]; ok && g.now().Add(5*time.Minute).Before(c.ExpiresAt) {
 		g.mu.Unlock()
 		return c, nil
 	}
@@ -154,21 +176,26 @@ func (g *GitHubApp) Mint(ctx context.Context, repo string) (Credential, error) {
 		return Credential{}, err
 	}
 
-	body, err := json.Marshal(map[string]any{"repositories": []string{name}})
+	req := map[string]any{"repositories": []string{name}}
+	if access == ReadOnly {
+		// GitHub narrows the token to exactly these permissions.
+		req["permissions"] = map[string]string{"contents": "read", "metadata": "read"}
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
 		return Credential{}, err
 	}
 	url := fmt.Sprintf("%s/app/installations/%s/access_tokens", g.baseURL, g.InstallationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return Credential{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+jwt)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	req.Header.Set("Content-Type", "application/json")
+	hreq.Header.Set("Authorization", "Bearer "+jwt)
+	hreq.Header.Set("Accept", "application/vnd.github+json")
+	hreq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	hreq.Header.Set("Content-Type", "application/json")
 
-	resp, err := g.http.Do(req)
+	resp, err := g.http.Do(hreq)
 	if err != nil {
 		return Credential{}, fmt.Errorf("forge: mint token: %w", err)
 	}
@@ -194,7 +221,7 @@ func (g *GitHubApp) Mint(ctx context.Context, repo string) (Credential, error) {
 	// token over HTTPS.
 	cred := Credential{Username: "x-access-token", Token: out.Token, ExpiresAt: out.ExpiresAt}
 	g.mu.Lock()
-	g.cache[repo] = cred
+	g.cache[key] = cred
 	g.mu.Unlock()
 	return cred, nil
 }
@@ -212,7 +239,9 @@ type StaticToken struct {
 
 func (s *StaticToken) Name() string { return "static-token" }
 
-func (s *StaticToken) Mint(_ context.Context, repo string) (Credential, error) {
+// Mint ignores access: a personal token cannot be narrowed per request, so a
+// "read-only" grant from it is read-only by policy alone.
+func (s *StaticToken) Mint(_ context.Context, repo string, _ Access) (Credential, error) {
 	if _, _, err := SplitRepo(repo); err != nil {
 		return Credential{}, err
 	}

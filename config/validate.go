@@ -68,6 +68,7 @@ func (c *Config) Validate() error {
 
 	c.validateGateway(&p)
 	c.validateRunners(&p)
+	c.validateMarketplaces(&p)
 	c.validateBundles(&p)
 	c.validateRoutes(&p)
 	c.validateMCP(&p)
@@ -185,6 +186,41 @@ func (c *Config) validateBundles(p *problems) {
 		}
 		if _, err := c.ResolveBundle(name); err != nil {
 			p.addf("bundle %q: %v", name, strings.TrimPrefix(err.Error(), "config: "))
+		}
+		for _, id := range b.Plugins {
+			plugin, market, ok := SplitPlugin(id)
+			switch {
+			case !ok:
+				p.addf("bundle %q: plugin %q must be name@marketplace", name, id)
+			case !protocol.ValidSlug(plugin):
+				p.addf("bundle %q: plugin name %q must be a lowercase slug", name, plugin)
+			case c.Marketplaces[market] == nil:
+				p.addf("bundle %q: plugin %q uses unknown marketplace %q", name, id, market)
+			}
+		}
+	}
+}
+
+// refRe is deliberately narrow: the ref is passed to git, so nothing that could
+// read as an option or a refspec with a colon gets through.
+var refRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$`)
+
+func (c *Config) validateMarketplaces(p *problems) {
+	for name, m := range c.Marketplaces {
+		if !protocol.ValidSlug(name) {
+			p.addf("marketplace %q: name must be a lowercase slug", name)
+		}
+		if m == nil {
+			p.addf("marketplace %q: empty definition", name)
+			continue
+		}
+		if strings.Count(m.Repo, "/") != 1 || strings.HasPrefix(m.Repo, "/") || strings.HasSuffix(m.Repo, "/") {
+			p.addf("marketplace %q: repo %q must be in owner/name form", name, m.Repo)
+		}
+		if m.Ref == "" {
+			p.addf("marketplace %q: ref is required (pin a tag or commit)", name)
+		} else if !refRe.MatchString(m.Ref) || strings.Contains(m.Ref, "..") {
+			p.addf("marketplace %q: ref %q is not a plain tag, branch or commit", name, m.Ref)
 		}
 	}
 }

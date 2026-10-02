@@ -142,6 +142,66 @@ routes:
 			want: "claimed by route 0 and route 1",
 		},
 		{
+			name: "plugin without a marketplace",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h, bundle: x }
+bundles:
+  x: { plugins: [tools] }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: `plugin "tools" must be name@marketplace`,
+		},
+		{
+			name: "plugin from an unknown marketplace",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h, bundle: x }
+bundles:
+  x: { plugins: [tools@nope] }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: `unknown marketplace "nope"`,
+		},
+		{
+			name: "marketplace without a ref",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+marketplaces:
+  m: { repo: acme/plugins }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: "ref is required",
+		},
+		{
+			name: "marketplace ref that looks like an option",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+marketplaces:
+  m: { repo: acme/plugins, ref: "--upload-pack=x" }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: "is not a plain tag, branch or commit",
+		},
+		{
+			name: "marketplace repo not owner/name",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+marketplaces:
+  m: { repo: plugins, ref: v1 }
+routes:
+  - { channel: C1, runner: a }
+`,
+			want: "must be in owner/name form",
+		},
+		{
 			name: "unknown runner in route",
 			src: `
 runners:
@@ -462,5 +522,59 @@ func TestValidConfigHasNoWarnings(t *testing.T) {
 	}
 	if len(c.Warnings) != 0 {
 		t.Errorf("warnings = %v, want none", c.Warnings)
+	}
+}
+
+func TestMarketplaceReadable(t *testing.T) {
+	cfg, err := Parse([]byte(`
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h, bundle: child }
+  b: { display: {name: B}, cwd: /b, harness: h }
+marketplaces:
+  m: { repo: acme/plugins, ref: v1 }
+bundles:
+  base: { plugins: [tools@m] }
+  child: { extends: base }
+routes:
+  - { channel: C1, runner: a }
+  - { channel: C2, runner: b }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.MarketplaceReadable("a", "acme/plugins") {
+		t.Error("a uses the marketplace through its base bundle")
+	}
+	if !cfg.MarketplaceReadable("a", "ACME/Plugins") {
+		t.Error("GitHub repo names are case-insensitive")
+	}
+	if cfg.MarketplaceReadable("b", "acme/plugins") || cfg.MarketplaceReadable("a", "acme/other") {
+		t.Error("readable beyond the marketplaces a runner's bundle uses")
+	}
+}
+
+func TestStrictMCPDefaultsOnAndInherits(t *testing.T) {
+	cfg, err := Parse([]byte(`
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h, bundle: child }
+bundles:
+  base: {}
+  loose: { strict_mcp: false }
+  child: { extends: loose }
+  back: { extends: loose, strict_mcp: true }
+routes:
+  - { channel: C1, runner: a }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]bool{"base": true, "loose": false, "child": false, "back": true} {
+		rb, err := cfg.ResolveBundle(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rb.StrictMCP != want {
+			t.Errorf("bundle %s: StrictMCP = %v, want %v", name, rb.StrictMCP, want)
+		}
 	}
 }

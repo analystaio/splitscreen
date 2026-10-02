@@ -214,6 +214,43 @@ mcp:
 A proxied server's `deny` list is enforced at the gateway, before the call
 leaves it.
 
+### Plugins
+
+Skills (and agents, commands, helper scripts) can come from a Claude Code
+plugin marketplace kept in a git repository on the forge, pinned to a ref:
+
+```yaml
+marketplaces:
+  acme:
+    repo: acme/claude-plugins
+    ref: v2026.10.01          # a tag or commit; moving it is a reviewable edit
+
+bundles:
+  web:
+    plugins: [react-patterns@acme, browser-testing@acme]
+```
+
+The runner fetches exactly that ref with a **read-only** credential the gateway
+mints for the repository (any runner whose bundle uses the marketplace may read
+it; its forge policy is otherwise unchanged, so it can never push there), and
+each session loads the enabled plugins with `--plugin-dir`. Nothing is
+installed into the harness's config: there is no plugin cache to drift and no
+background update to move a pinned version. The ref is part of the bundle, so
+bumping it marks live sessions stale like any other bundle change.
+
+- Only relative-path plugin sources inside the marketplace load; a plugin that
+  points at another repository would run code nobody pinned.
+- By default plugins do not bring MCP servers: sessions run with
+  `--strict-mcp-config`, so only the bundle's `mcp:` servers load. A bundle can
+  set `strict_mcp: false` (inherited through `extends`) to let plugins bring
+  their own. The cost: a headless session then also loads the working tree's
+  `.mcp.json` without asking, so any branch the agent checks out can start a
+  server, outside the permission check.
+- The checkout lives in the runner's state dir when it has one, so a restart
+  with the forge unreachable still loads the same ref. A different ref is never
+  substituted; if a fetch fails, the session starts without the affected
+  plugins and the failure is logged on the gateway.
+
 ## Policy
 
 Deny rules are evaluated **before** a permission prompt is posted, so a denied
@@ -367,6 +404,8 @@ Runner fields: `display` (`name`, `icon`, `show_activity`), `host`, `cwd`, `harn
 `bundle`, `model`, `idle`, `max_concurrent`, `policy`, `token_secret`, `harness_secret`,
 `harness_env`, `billing`, `context_header`, `working_status`, and `wake`
 (`ec2_instance`, `region`).
+Bundle fields: `extends`, `memory`, `skills`, `plugins` (`name@marketplace`),
+`mcp`, `strict_mcp` (default `true`). Marketplace fields: `repo`, `ref` (see [Plugins](#plugins)).
 See [`examples/splitscreen.yaml`](examples/splitscreen.yaml) and the field comments in `config/config.go`.
 
 Enforced invariants include: one channel maps to exactly one runner, at most one

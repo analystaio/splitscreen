@@ -45,6 +45,7 @@ func (g *Gateway) buildBundle(runner string) (*protocol.BundlePush, error) {
 		if err != nil {
 			return nil, err
 		}
+		push.LooseMCP = !resolved.StrictMCP
 		for _, rel := range resolved.Memory {
 			content, err := g.readBundleFile(rel)
 			if err != nil {
@@ -91,12 +92,21 @@ func (g *Gateway) buildBundle(runner string) (*protocol.BundlePush, error) {
 		}
 
 		if len(resolved.Plugins) > 0 {
-			manifest, err := json.MarshalIndent(map[string]any{"plugins": resolved.Plugins}, "", "  ")
+			// The manifest is all the runner needs to fetch and load plugins:
+			// which ones, and where each marketplace lives at which ref. It is
+			// part of the digest, so moving a ref re-pushes the bundle.
+			markets := map[string]protocol.Marketplace{}
+			for name, m := range cfg.MarketplacesFor(resolved) {
+				markets[name] = protocol.Marketplace{Repo: m.Repo, Ref: m.Ref}
+			}
+			manifest, err := json.MarshalIndent(protocol.PluginManifest{
+				Plugins: resolved.Plugins, Marketplaces: markets,
+			}, "", "  ")
 			if err != nil {
 				return nil, err
 			}
 			push.Files = append(push.Files, protocol.BundleFile{
-				Path: "plugins.json", Content: manifest, Mode: 0o600,
+				Path: protocol.PluginManifestFile, Content: manifest, Mode: 0o600,
 			})
 		}
 	}
@@ -131,6 +141,8 @@ func digestBundle(b *protocol.BundlePush) string {
 	// unchanged digest, the push would be skipped as redundant, and the runner
 	// would keep running the old model with the config claiming otherwise.
 	fmt.Fprintf(h, "model:%s\x00", b.Model)
+	// Likewise the MCP mode: it changes which tools a session has.
+	fmt.Fprintf(h, "loose_mcp:%v\x00", b.LooseMCP)
 	files := append([]protocol.BundleFile(nil), b.Files...)
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	for _, f := range files {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/analystaio/splitscreen/internal/forge"
 	"github.com/analystaio/splitscreen/internal/pricing"
 	"github.com/analystaio/splitscreen/internal/store"
 	"github.com/analystaio/splitscreen/internal/surface"
@@ -511,11 +512,19 @@ func (g *Gateway) onCredentialRequest(ctx context.Context, c *Conn, fr *protocol
 	// Policy is checked before capability: a repository outside the allowlist is
 	// refused for that reason whether or not a provider happens to be
 	// configured, and the answer does not depend on gateway internals.
+	// The runner's forge policy grants the installation's access. A repository
+	// outside it is still readable if it hosts a plugin marketplace this
+	// runner's bundle uses — read-only, so a runner can fetch its plugins but
+	// never change them (or anyone else's).
+	access := forge.ReadWrite
 	if !RepoAllowed(rc.Policy.Forge.Repos, fr.Resource) {
-		// An empty allowlist denies everything: a runner with no declared
-		// repositories has no business minting git credentials.
-		deny(fmt.Sprintf("repository %q is outside this runner's forge policy", fr.Resource))
-		return
+		if !g.cfg.Load().MarketplaceReadable(c.runner, fr.Resource) {
+			// An empty allowlist denies everything: a runner with no declared
+			// repositories has no business minting git credentials.
+			deny(fmt.Sprintf("repository %q is outside this runner's forge policy", fr.Resource))
+			return
+		}
+		access = forge.ReadOnly
 	}
 	if g.forge == nil {
 		deny("no forge provider is configured on the gateway")
@@ -524,7 +533,7 @@ func (g *Gateway) onCredentialRequest(ctx context.Context, c *Conn, fr *protocol
 
 	mintCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	cred, err := g.forge.Mint(mintCtx, fr.Resource)
+	cred, err := g.forge.Mint(mintCtx, fr.Resource, access)
 	if err != nil {
 		deny("mint failed: " + err.Error())
 		return

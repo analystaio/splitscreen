@@ -47,14 +47,23 @@ func buildArgs(cfg harness.SessionConfig) []string {
 	if cfg.MCPConfigPath != "" {
 		// Strict mode means the runner fully determines the tool surface and
 		// nothing leaks in from user or project scope. Deterministic beats
-		// convenient for a control plane.
-		args = append(args, "--mcp-config", cfg.MCPConfigPath, "--strict-mcp-config")
+		// convenient for a control plane — unless the bundle opted out so its
+		// plugins can bring their own servers.
+		args = append(args, "--mcp-config", cfg.MCPConfigPath)
+		if !cfg.LooseMCP {
+			args = append(args, "--strict-mcp-config")
+		}
 	}
 	if cfg.PermissionTool != "" {
 		args = append(args, "--permission-prompt-tool", cfg.PermissionTool)
 	}
 	if cfg.ResumeID != "" {
 		args = append(args, "--resume", cfg.ResumeID)
+	}
+	// Session-only loading: nothing is installed into the config dir, so
+	// there is no plugin cache and no auto-update to move a pinned version.
+	for _, d := range cfg.PluginDirs {
+		args = append(args, "--plugin-dir", d)
 	}
 	return args
 }

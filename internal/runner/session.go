@@ -126,8 +126,17 @@ func (r *Runner) sessionFor(ctx context.Context, threadID string) (*threadSessio
 		return nil, err
 	}
 
+	pluginDirs, err := r.plugins.wait(ctx, pluginWait)
+	if err != nil {
+		// A session without its plugins beats no session; the sync failure
+		// itself was reported when it happened.
+		r.log.Warn("starting without plugins", "thread", threadID, "err", err)
+	}
+
 	env := r.buildEnv(configDir)
 	cfg := harness.SessionConfig{
+		PluginDirs:     pluginDirs,
+		LooseMCP:       r.bundle.LooseMCP(),
 		Cwd:            r.opts.Cwd,
 		Model:          r.bundle.Model(),
 		ConfigDir:      configDir,
