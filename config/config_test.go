@@ -202,6 +202,26 @@ routes:
 			want: "must be in owner/name form",
 		},
 		{
+			name: "allow_bots on a dm route",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+routes:
+  - { dm: true, runner: a, allow_bots: [B1] }
+`,
+			want: "allow_bots is only supported on channel routes",
+		},
+		{
+			name: "empty allow_bots entry",
+			src: `
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+routes:
+  - { channel: C1, runner: a, allow_bots: [""] }
+`,
+			want: "allow_bots has an empty entry",
+		},
+		{
 			name: "unknown runner in route",
 			src: `
 runners:
@@ -575,6 +595,37 @@ routes:
 		}
 		if rb.StrictMCP != want {
 			t.Errorf("bundle %s: StrictMCP = %v, want %v", name, rb.StrictMCP, want)
+		}
+	}
+}
+
+func TestBotAllowed(t *testing.T) {
+	cfg, err := Parse([]byte(`
+runners:
+  a: { display: {name: A}, cwd: /a, harness: h }
+  b: { display: {name: B}, cwd: /b, harness: h }
+routes:
+  - { channel: C1, runner: a, allow_bots: [B1, U9] }
+  - { channel: C2, runner: b }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		channel string
+		ids     []string
+		want    bool
+	}{
+		{"C1", []string{"B1", "U1"}, true},
+		{"C1", []string{"B2", "U9"}, true}, // by the bot's user id
+		{"C1", []string{"B2", "U2"}, false},
+		{"C1", []string{"", ""}, false},
+		{"C2", []string{"B1", "U9"}, false}, // allowlists are per channel
+		{"C3", []string{"B1"}, false},
+	}
+	for _, c := range cases {
+		if got := cfg.BotAllowed(c.channel, c.ids...); got != c.want {
+			t.Errorf("BotAllowed(%s, %v) = %v, want %v", c.channel, c.ids, got, c.want)
 		}
 	}
 }

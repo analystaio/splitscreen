@@ -39,10 +39,7 @@ func (r *Runner) requestCredential(ctx context.Context, resource string) (Creden
 		Kind:      protocol.CredentialForge,
 		Resource:  resource,
 	}
-	if err := r.send(ctx, req); err != nil {
-		return CredentialResult{}, err
-	}
-	v, err := r.waitFor(ctx, id)
+	v, err := r.request(ctx, id, req)
 	if err != nil {
 		return CredentialResult{}, err
 	}
@@ -82,10 +79,7 @@ func (r *Runner) requestPermission(ctx context.Context, threadID, tool string, i
 		Input:     input,
 		Cwd:       r.opts.Cwd,
 	}
-	if err := r.send(ctx, req); err != nil {
-		return PermissionResult{}, err
-	}
-	v, err := r.waitFor(ctx, id)
+	v, err := r.request(ctx, id, req)
 	if err != nil {
 		// A timeout or a dropped connection must not read as approval.
 		return PermissionResult{Behavior: "deny", Message: "no decision reached the runner"}, nil
@@ -119,10 +113,7 @@ func (r *Runner) callProxiedMCP(ctx context.Context, threadID, server, tool stri
 		Tool:     tool,
 		Args:     args,
 	}
-	if err := r.send(ctx, req); err != nil {
-		return nil, err
-	}
-	v, err := r.waitFor(ctx, id)
+	v, err := r.request(ctx, id, req)
 	if err != nil {
 		return nil, err
 	}

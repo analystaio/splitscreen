@@ -238,3 +238,17 @@ func TestEnrollWriteRequiresAConfiguredRunner(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestRouteAddAllowBot(t *testing.T) {
+	path := writeConfigFile(t, baseConfig)
+	if err := runCmd(t, "route", "add", "C222", "beta", "--allow-bot", "B1", "--allow-bot", "U2", "-c", path); err != nil {
+		t.Fatalf("route add: %v", err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.BotAllowed("C222", "B1") || !cfg.BotAllowed("C222", "U2") || cfg.BotAllowed("C222", "B3") {
+		t.Fatalf("routes = %+v", cfg.Routes)
+	}
+}

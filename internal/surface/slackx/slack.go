@@ -114,15 +114,7 @@ func (s *Surface) handleEvent(ctx context.Context, h surface.Handler, api slacke
 	if !ok {
 		return
 	}
-	// Ignore our own posts, and every edit/delete/join subtype. "file_share" is
-	// deliberately allowed: it is how a message carrying an attachment arrives,
-	// and dropping it would silently discard every upload.
-	if ev.BotID != "" || ev.User == "" || ev.User == s.selfID {
-		return
-	}
-	switch ev.SubType {
-	case "", "file_share":
-	default:
+	if !accept(ev, s.selfID, s.botID) {
 		return
 	}
 
@@ -138,6 +130,12 @@ func (s *Surface) handleEvent(ctx context.Context, h surface.Handler, api slacke
 		User:    surface.User{ID: ev.User},
 		Text:    ev.Text,
 		IsDM:    ev.ChannelType == "im",
+		BotID:   ev.BotID,
+	}
+	if in.User.ID == "" {
+		// A classic bot_message (incoming webhook, legacy integration) has no
+		// user behind it; the bot id is the only identity it carries.
+		in.User = surface.User{ID: ev.BotID, Display: ev.Username}
 	}
 	// The library's custom unmarshaller populates Message for plain messages as
 	// well as changed ones, and attachments only ever live there.
@@ -157,13 +155,37 @@ func (s *Surface) handleEvent(ctx context.Context, h surface.Handler, api slacke
 	h.OnMessage(ctx, in)
 }
 
+// accept is the surface-level filter. It drops our own posts and every
+// edit/delete/join subtype. "file_share" is deliberately kept: it is how a
+// message carrying an attachment arrives, and dropping it would silently
+// discard every upload. Other bots' messages pass through marked with their
+// BotID; whether one is welcome is the gateway's call, per route.
+func accept(ev *slackevents.MessageEvent, selfID, botID string) bool {
+	if ev.User != "" && ev.User == selfID {
+		return false
+	}
+	if ev.BotID != "" && ev.BotID == botID {
+		return false
+	}
+	switch ev.SubType {
+	case "", "file_share":
+		return ev.User != ""
+	case "bot_message":
+		return ev.BotID != ""
+	default:
+		return false
+	}
+}
+
 // enrich adds the sender's name and email and the channel's name, so the agent
 // knows who is asking and where. Best effort: see directory.
 func (s *Surface) enrich(ctx context.Context, in *surface.Inbound) {
 	if s.dir == nil {
 		return
 	}
-	in.User.Display, in.User.Email = s.dir.user(ctx, in.User.ID)
+	if in.User.ID != in.BotID {
+		in.User.Display, in.User.Email = s.dir.user(ctx, in.User.ID)
+	}
 	if !in.IsDM {
 		in.ChannelName = s.dir.channel(ctx, in.Channel)
 	}

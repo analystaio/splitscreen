@@ -219,6 +219,14 @@ type Route struct {
 	Channel string `yaml:"channel"`
 	DM      bool   `yaml:"dm"`
 	Runner  string `yaml:"runner"`
+
+	// AllowBots lists the bots whose messages this channel accepts, by the
+	// surface's id for them (on Slack the bot id, B…, or the bot's user id, U…).
+	// Bots are ignored by default: two bots that answer each other loop
+	// forever, and a bot's message is not a person asking. An allowed bot is
+	// held to the same rules as a person, so it must still address the bot to
+	// start a conversation.
+	AllowBots []string `yaml:"allow_bots"`
 }
 
 // Marketplace is a plugin marketplace in a git repository on the forge.
@@ -297,6 +305,24 @@ func (c *Config) applyDefaults() {
 
 // RunnerFor resolves an inbound message to a runner name. Unrouted channels
 // return false and are ignored — this replaces per-runner channel allowlists.
+// BotAllowed reports whether a bot known by any of ids may post into channel.
+// Only channel routes carry an allowlist; there is no way to admit a bot to DMs.
+func (c *Config) BotAllowed(channel string, ids ...string) bool {
+	for _, r := range c.Routes {
+		if r.DM || r.Channel != channel {
+			continue
+		}
+		for _, allowed := range r.AllowBots {
+			for _, id := range ids {
+				if id != "" && id == allowed {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (c *Config) RunnerFor(channel string, isDM bool) (string, bool) {
 	for _, r := range c.Routes {
 		if isDM && r.DM {

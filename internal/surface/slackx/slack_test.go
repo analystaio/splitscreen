@@ -90,13 +90,15 @@ func TestDMFlagged(t *testing.T) {
 // Our own posts and every edit/delete/join subtype must be ignored, or the bot
 // would answer itself.
 func TestIgnoredEvents(t *testing.T) {
-	s := &Surface{selfID: "UBOT"}
+	s := &Surface{selfID: "UBOT", botID: "BSELF"}
 	cases := []struct {
 		name string
 		ev   *slackevents.MessageEvent
 	}{
 		{"our own message", &slackevents.MessageEvent{User: "UBOT", Text: "x", TimeStamp: "1"}},
-		{"another bot", &slackevents.MessageEvent{BotID: "B1", User: "U1", Text: "x", TimeStamp: "1"}},
+		{"our own bot id", &slackevents.MessageEvent{BotID: "BSELF", User: "UBOT", Text: "x", TimeStamp: "1"}},
+		{"our own bot_message", &slackevents.MessageEvent{BotID: "BSELF", SubType: "bot_message", Text: "x", TimeStamp: "1"}},
+		{"bot_message without a bot", &slackevents.MessageEvent{SubType: "bot_message", Text: "x", TimeStamp: "1"}},
 		{"no user", &slackevents.MessageEvent{Text: "x", TimeStamp: "1"}},
 		{"an edit", &slackevents.MessageEvent{User: "U1", Text: "x", TimeStamp: "1", SubType: "message_changed"}},
 		{"a join", &slackevents.MessageEvent{User: "U1", Text: "x", TimeStamp: "1", SubType: "channel_join"}},
@@ -361,4 +363,48 @@ func TestAddressedDetection(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Other bots pass the surface marked as bots; the gateway decides, per route,
+// whether to listen. Unmarked, they would be indistinguishable from people.
+func TestOtherBotsAreMarked(t *testing.T) {
+	s := &Surface{selfID: "UBOT", botID: "BSELF"}
+
+	t.Run("app bot posting with its bot token", func(t *testing.T) {
+		h := &recordingHandler{}
+		s.handleEvent(context.Background(), h, event(&slackevents.MessageEvent{
+			BotID: "BRELAY", User: "URELAY", Text: "<@UBOT> alarm", Channel: "C1", TimeStamp: "1",
+		}))
+		if len(h.messages) != 1 {
+			t.Fatalf("messages = %d", len(h.messages))
+		}
+		in := h.messages[0]
+		if in.BotID != "BRELAY" || in.User.ID != "URELAY" || !in.Addressed {
+			t.Fatalf("inbound = %+v", in)
+		}
+	})
+
+	t.Run("classic bot_message has only a bot id", func(t *testing.T) {
+		h := &recordingHandler{}
+		s.handleEvent(context.Background(), h, event(&slackevents.MessageEvent{
+			BotID: "BHOOK", SubType: "bot_message", Username: "Webhook", Text: "x", Channel: "C1", TimeStamp: "1",
+		}))
+		if len(h.messages) != 1 {
+			t.Fatalf("messages = %d", len(h.messages))
+		}
+		in := h.messages[0]
+		if in.BotID != "BHOOK" || in.User.ID != "BHOOK" || in.User.Display != "Webhook" {
+			t.Fatalf("inbound = %+v", in)
+		}
+	})
+
+	t.Run("a person is not a bot", func(t *testing.T) {
+		h := &recordingHandler{}
+		s.handleEvent(context.Background(), h, event(&slackevents.MessageEvent{
+			User: "U1", Text: "x", Channel: "C1", TimeStamp: "1",
+		}))
+		if h.messages[0].BotID != "" {
+			t.Fatalf("a person was marked as a bot: %+v", h.messages[0])
+		}
+	})
 }
