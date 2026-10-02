@@ -218,6 +218,15 @@ func (c *Config) validateRoutes(p *problems) {
 			}
 		}
 
+		if r.DM && len(r.AllowBots) > 0 {
+			p.addf("route %d: allow_bots is only supported on channel routes", i)
+		}
+		for _, b := range r.AllowBots {
+			if strings.TrimSpace(b) == "" {
+				p.addf("route %d: allow_bots has an empty entry", i)
+			}
+		}
+
 		if r.DM {
 			dmRoutes++
 			if dmRoutes > 1 {

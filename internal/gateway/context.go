@@ -26,6 +26,11 @@ func contextHeader(in surface.Inbound) string {
 	}
 
 	var who []string
+	if in.BotID != "" {
+		// An allowed bot is still not a person: say so, so the agent does not
+		// address its answer to, or take instructions as if from, a colleague.
+		who = append(who, "bot")
+	}
 	if d := clean(in.User.Display); d != "" {
 		who = append(who, d)
 	}

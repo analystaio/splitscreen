@@ -72,6 +72,7 @@ func routeListCmd() *cobra.Command {
 func routeAddCmd() *cobra.Command {
 	var cfgPath string
 	var dm bool
+	var allowBots []string
 
 	cmd := &cobra.Command{
 		Use:   "add <channel-id> <runner>",
@@ -83,7 +84,11 @@ formatting elsewhere survive untouched. The gateway is not signalled; reload it
 when you are ready.
 
 Remember that Slack only delivers messages for channels the bot has joined — a
-route without an invite looks exactly like no route at all.`,
+route without an invite looks exactly like no route at all.
+
+Messages from other bots are ignored unless named with --allow-bot (repeatable;
+on Slack the bot id B… or the bot's user id U…), e.g. an alert relay that posts
+for the runner to triage.`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if dm {
 				return cobra.ExactArgs(1)(cmd, args)
@@ -119,7 +124,7 @@ route without an invite looks exactly like no route at all.`,
 			}
 
 			updated, err := editRoutes(cfgPath, func(seq *yaml.Node) error {
-				seq.Content = append(seq.Content, routeNode(channel, runner, dm))
+				seq.Content = append(seq.Content, routeNode(channel, runner, dm, allowBots))
 				return nil
 			})
 			if err != nil {
@@ -146,6 +151,7 @@ route without an invite looks exactly like no route at all.`,
 	}
 	cmd.Flags().StringVarP(&cfgPath, "config", "c", defaultConfigPath, "path to the configuration file")
 	cmd.Flags().BoolVar(&dm, "dm", false, "route direct messages instead of a channel")
+	cmd.Flags().StringArrayVar(&allowBots, "allow-bot", nil, "accept messages from this bot in the channel (repeatable)")
 	return cmd
 }
 
@@ -419,7 +425,7 @@ func nodeMapValue(m *yaml.Node, key string) string {
 	return ""
 }
 
-func routeNode(channel, runner string, dm bool) *yaml.Node {
+func routeNode(channel, runner string, dm bool, allowBots []string) *yaml.Node {
 	n := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Style: yaml.FlowStyle}
 	add := func(k string, v *yaml.Node) {
 		n.Content = append(n.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: k}, v)
@@ -430,6 +436,13 @@ func routeNode(channel, runner string, dm bool) *yaml.Node {
 		add("channel", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: channel})
 	}
 	add("runner", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: runner})
+	if len(allowBots) > 0 {
+		seq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq", Style: yaml.FlowStyle}
+		for _, b := range allowBots {
+			seq.Content = append(seq.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: b})
+		}
+		add("allow_bots", seq)
+	}
 	return n
 }
 

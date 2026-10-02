@@ -66,6 +66,13 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 	cfg := g.cfg.Load()
 	key := threadKey(in.Surface, in.Channel, in.Thread)
 
+	// Other bots are ignored unless this channel's route names them, and that
+	// check comes before anything else: an unlisted bot can neither start a
+	// conversation nor continue one, so two bots in a thread cannot loop.
+	if in.BotID != "" && (in.IsDM || !cfg.BotAllowed(in.Channel, in.BotID, in.User.ID)) {
+		return
+	}
+
 	text, cmd, cmdArg := parseCommand(in.Text)
 
 	// An existing binding wins over routing config: the session lives on that
