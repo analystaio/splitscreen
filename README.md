@@ -247,6 +247,25 @@ splitscreen route remove C0123456789
 systemctl reload splitscreen-gateway
 ```
 
+Messages from other bots are ignored unless the channel's route names the bot.
+That is how an alert relay or a CI bot hands work to a runner:
+
+```sh
+splitscreen route add C0123456789 ops --allow-bot B0123456789
+```
+
+```yaml
+routes:
+  - { channel: C0123456789, runner: ops, allow_bots: [B0123456789] }
+```
+
+On Slack an entry is the bot id (`B…`) or the bot's user id (`U…`). An allowed
+bot follows the same rules as a person: it must mention the bot to start a
+conversation, its message queues for an offline runner and wakes a wakeable
+one, and the agent's context header marks it as coming from a bot. Bots never
+reach a DM route, and an unlisted bot cannot continue a thread either, so two
+bots cannot keep each other going.
+
 Runners themselves are managed the same way. A control plane that creates a runner
 per task machine copies a template rather than writing YAML:
 

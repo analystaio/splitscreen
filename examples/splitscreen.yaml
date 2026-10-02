@@ -128,6 +128,8 @@ runners:
 routes:
   - { channel: C0123456789, runner: staging }
   - { channel: C0987654321, runner: review }
+  # Other bots are ignored unless listed. Here a CI bot may hand work to review.
+  # - { channel: C0987654321, runner: review, allow_bots: [B0123456789] }
   - { dm: true,             runner: staging }
 
 # ---------------------------------------------------------------------------

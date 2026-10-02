@@ -53,6 +53,10 @@ type Inbound struct {
 	// ChannelName is the human name of Channel ("box-foo"), when the surface
 	// could resolve it. Empty for a DM, or when resolution failed.
 	ChannelName string
+	// BotID is set when another bot sent the message (never this one). The
+	// gateway drops such messages unless the channel's route allows the bot by
+	// BotID or by User.ID. Surfaces without bots leave it empty.
+	BotID string
 }
 
 // File is an attachment on an inbound message. Open is called at most once and
