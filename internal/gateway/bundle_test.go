@@ -43,3 +43,13 @@ func TestDigestIsStable(t *testing.T) {
 		t.Fatal("digest is not stable across identical bundles")
 	}
 }
+
+// Turning strict MCP off changes which tools a session has, so it must change
+// the digest or the push would be skipped as redundant.
+func TestDigestCoversLooseMCP(t *testing.T) {
+	strict := &protocol.BundlePush{Model: "m"}
+	loose := &protocol.BundlePush{Model: "m", LooseMCP: true}
+	if digestBundle(strict) == digestBundle(loose) {
+		t.Fatal("loose_mcp did not change the digest")
+	}
+}

@@ -280,3 +280,35 @@ func TestFailedToolResultCarriesItsReason(t *testing.T) {
 	}
 	t.Fatal("no tool_end event for the failed call")
 }
+
+func TestBuildArgsLoadsPluginDirs(t *testing.T) {
+	args := buildArgs(harness.SessionConfig{Cwd: "/w", PluginDirs: []string{"/m/plugins/a", "/m/plugins/b"}})
+	got := strings.Join(args, " ")
+	if !strings.Contains(got, "--plugin-dir /m/plugins/a --plugin-dir /m/plugins/b") {
+		t.Fatalf("args = %v", args)
+	}
+	for _, a := range buildArgs(harness.SessionConfig{Cwd: "/w"}) {
+		if a == "--plugin-dir" {
+			t.Fatal("--plugin-dir without plugins")
+		}
+	}
+}
+
+func TestBuildArgsStrictUnlessLoose(t *testing.T) {
+	has := func(args []string, flag string) bool {
+		for _, a := range args {
+			if a == flag {
+				return true
+			}
+		}
+		return false
+	}
+	strict := buildArgs(harness.SessionConfig{Cwd: "/w", MCPConfigPath: "/m.json"})
+	if !has(strict, "--strict-mcp-config") || !has(strict, "--mcp-config") {
+		t.Fatalf("strict args = %v", strict)
+	}
+	loose := buildArgs(harness.SessionConfig{Cwd: "/w", MCPConfigPath: "/m.json", LooseMCP: true})
+	if has(loose, "--strict-mcp-config") || !has(loose, "--mcp-config") {
+		t.Fatalf("loose args = %v: the runner's own servers must still be passed", loose)
+	}
+}

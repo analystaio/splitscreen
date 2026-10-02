@@ -90,11 +90,18 @@ type SessionConfig struct {
 	// ResumeID continues a previous session, transparently, after an idle kill.
 	ResumeID string
 	// MCPConfigPath is the assembled server set. Adapters should pass a strict
-	// flag so nothing leaks in from user or project scope.
+	// flag so nothing leaks in from user or project scope — unless LooseMCP.
 	MCPConfigPath string
+	// LooseMCP drops the strict flag: servers from plugins (and from the
+	// working tree's own config) load alongside MCPConfigPath's.
+	LooseMCP bool
 	// PermissionTool is the tool the harness must call for permission
 	// decisions, rather than prompting or auto-approving.
 	PermissionTool string
+	// PluginDirs are plugin directories to load for this session only, from
+	// the runner's pinned marketplace checkouts. Adapters without plugins
+	// ignore them.
+	PluginDirs []string
 }
 
 // Session is one live harness conversation.

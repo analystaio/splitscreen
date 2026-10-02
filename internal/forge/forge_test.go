@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -89,7 +90,7 @@ func TestMintRequestsRepositoryScope(t *testing.T) {
 	}
 	g.baseURL = srv.URL
 
-	cred, err := g.Mint(context.Background(), "acme/widgets")
+	cred, err := g.Mint(context.Background(), "acme/widgets", ReadWrite)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,8 +104,44 @@ func TestMintRequestsRepositoryScope(t *testing.T) {
 	if len(repos) != 1 || repos[0] != "widgets" {
 		t.Fatalf("repositories = %v, want exactly [widgets]", gotBody["repositories"])
 	}
+	if _, narrowed := gotBody["permissions"]; narrowed {
+		t.Errorf("a read-write mint narrowed permissions: %v", gotBody["permissions"])
+	}
 	if !strings.HasPrefix(gotAuth, "Bearer ") {
 		t.Errorf("authorization = %q", gotAuth)
+	}
+}
+
+// A read-only mint asks GitHub for contents:read and nothing else, and is
+// cached apart from the read-write token for the same repository.
+func TestMintReadOnlyNarrowsPermissions(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var b map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&b)
+		bodies = append(bodies, b)
+		_, _ = w.Write([]byte(`{"token":"ghs_` + fmt.Sprint(len(bodies)) + `","expires_at":"2030-01-01T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	g, _ := NewGitHubApp("123", "456", testKeyPEM(t))
+	g.baseURL = srv.URL
+
+	ro, err := g.Mint(context.Background(), "acme/plugins", ReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	perms, _ := bodies[0]["permissions"].(map[string]any)
+	if len(perms) != 2 || perms["contents"] != "read" || perms["metadata"] != "read" {
+		t.Fatalf("permissions = %v, want contents:read + metadata:read only", bodies[0]["permissions"])
+	}
+	rw, _ := g.Mint(context.Background(), "acme/plugins", ReadWrite)
+	if rw.Token == ro.Token || len(bodies) != 2 {
+		t.Fatalf("read-write mint was served the read-only token (%d mints)", len(bodies))
+	}
+	again, _ := g.Mint(context.Background(), "acme/plugins", ReadOnly)
+	if again.Token != ro.Token || len(bodies) != 2 {
+		t.Fatalf("read-only token was not cached (%d mints)", len(bodies))
 	}
 }
 
@@ -120,7 +157,7 @@ func TestMintCachesUntilNearExpiry(t *testing.T) {
 	g.baseURL = srv.URL
 
 	for i := 0; i < 3; i++ {
-		if _, err := g.Mint(context.Background(), "acme/widgets"); err != nil {
+		if _, err := g.Mint(context.Background(), "acme/widgets", ReadWrite); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -129,7 +166,7 @@ func TestMintCachesUntilNearExpiry(t *testing.T) {
 	}
 
 	// A different repository must not reuse the first repository's token.
-	if _, err := g.Mint(context.Background(), "acme/other"); err != nil {
+	if _, err := g.Mint(context.Background(), "acme/other", ReadWrite); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 2 {
@@ -147,7 +184,7 @@ func TestMintSurfacesGitHubErrors(t *testing.T) {
 	g, _ := NewGitHubApp("123", "456", testKeyPEM(t))
 	g.baseURL = srv.URL
 
-	_, err := g.Mint(context.Background(), "acme/widgets")
+	_, err := g.Mint(context.Background(), "acme/widgets", ReadWrite)
 	if err == nil {
 		t.Fatal("expected an error")
 	}

@@ -134,6 +134,15 @@ routes:
 
 # ---------------------------------------------------------------------------
 
+# Plugin marketplaces: git repositories on the forge, pinned to a ref. Runners
+# fetch them read-only and load the plugins a bundle enables (name@marketplace).
+marketplaces:
+  acme:
+    repo: acme/claude-plugins
+    ref: v2026.10.01
+
+# ---------------------------------------------------------------------------
+
 # Bundles are the harness configuration the gateway materializes onto a runner.
 # They compose: a base layer contributes shared rules, an overlay adds its own.
 bundles:

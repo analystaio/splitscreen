@@ -21,6 +21,7 @@ type materialized struct {
 	configDir string
 	mcpPath   string
 	model     string
+	looseMCP  bool
 	// secrets are held in memory and written only to tmpfs. They are never
 	// logged and never persisted.
 	secrets map[string]string
@@ -48,6 +49,12 @@ func (m *materialized) Model() string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.model
+}
+
+func (m *materialized) LooseMCP() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.looseMCP
 }
 
 func (m *materialized) MCPPath() string {
@@ -143,6 +150,7 @@ func (r *Runner) applyBundle(push *protocol.BundlePush) error {
 	r.bundle.version = push.Version
 	r.bundle.digest = push.Digest
 	r.bundle.model = push.Model
+	r.bundle.looseMCP = push.LooseMCP
 	r.bundle.configDir = configDir
 	r.bundle.mcpPath = filepath.Join(configDir, "mcp.json")
 	r.bundle.secrets = make(map[string]string, len(push.Secrets))
