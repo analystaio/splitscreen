@@ -131,6 +131,12 @@ type session struct {
 	running atomic.Bool
 	closed  sync.Once
 	toolN   atomic.Int64
+	// interrupted is set by Interrupt and consumed by the next result, which
+	// the CLI reports as an error (error_during_execution) when it was stopped.
+	// Send clears it: a stale flag from an interrupt that landed between turns
+	// must not relabel the next turn's genuine failure.
+	interrupted atomic.Bool
+	nextReq     atomic.Int64
 
 	// callStart is when each tool call was announced, so its result can carry a
 	// duration. Keyed by tool_use id; entries are removed when the result
@@ -183,7 +189,29 @@ func (s *session) Send(ctx context.Context, in harness.Input) error {
 	if id := s.SessionID(); id != "" {
 		payload["session_id"] = id
 	}
+	s.interrupted.Store(false)
+	return s.write(payload)
+}
 
+// Interrupt stops the turn in flight the way Esc does in the terminal: the
+// running tool is killed, the turn ends with an error result, and the process
+// stays up for the next message. Interrupting an idle session is a no-op on
+// the CLI's side.
+func (s *session) Interrupt(ctx context.Context) error {
+	if !s.running.Load() {
+		return errors.New("claudecode: session is not running")
+	}
+	s.interrupted.Store(true)
+	return s.write(map[string]any{
+		"type":       "control_request",
+		"request_id": fmt.Sprintf("interrupt_%d", s.nextReq.Add(1)),
+		"request":    map[string]any{"subtype": "interrupt"},
+	})
+}
+
+// write sends one stream-json line. Lines must not interleave, so every write
+// goes through the same lock.
+func (s *session) write(payload map[string]any) error {
 	line, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -433,6 +461,19 @@ func (s *session) readStdout(r io.Reader) {
 			// distinguishable from "the numbers are zero".
 			s.emit(harness.Event{Kind: harness.EventUsage, Usage: usage})
 
+			// An interrupted turn arrives as an error result. It is the outcome
+			// someone asked for, not a failure, so it ends the turn as done.
+			// A turn that finished before the interrupt landed reports as it
+			// really ended, and clears the flag either way.
+			if s.interrupted.Swap(false) && ev.IsError {
+				s.emit(harness.Event{
+					Kind:        harness.EventDone,
+					SessionID:   s.SessionID(),
+					ToolCalls:   int(s.toolN.Load()),
+					Interrupted: true,
+				})
+				continue
+			}
 			if ev.IsError {
 				s.emit(harness.Event{
 					Kind:  harness.EventError,

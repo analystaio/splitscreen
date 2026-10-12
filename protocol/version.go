@@ -12,7 +12,12 @@ import (
 // mismatched versions in flight. Bump Major for any change that removes a
 // frame, removes a field, or changes the meaning of an existing field. Bump
 // Minor for additive changes (new frame types, new optional fields).
-const Version = "1.1"
+const Version = "1.2"
+
+// MinorTurnCancel is the first minor that understands turn.cancel. An older
+// runner drops the frame as unknown, so the gateway checks before offering to
+// stop a turn rather than promising something that silently does nothing.
+const MinorTurnCancel = 2
 
 // SemVer is a major.minor pair. The protocol deliberately has no patch
 // component: a change either affects the wire or it does not.

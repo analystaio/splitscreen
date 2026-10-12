@@ -40,6 +40,9 @@ type turnContext struct {
 	// turn sweep uses it: a turn silent far longer than any real tool call has
 	// been orphaned (its Done was lost or misattributed) and must be finalized.
 	lastActivity atomic.Int64
+
+	// stop is the turn's Stop control and whether anyone pressed it.
+	stop stopState
 }
 
 func (t *turnContext) touch() { t.lastActivity.Store(time.Now().UnixNano()) }
@@ -172,6 +175,11 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 		})
 		g.notice(ctx, in, "Rebound to `"+target+"`; a fresh session starts on the next message.")
 		return
+	case "stop":
+		g.stopThread(ctx, in, key)
+		if text == "" {
+			return
+		}
 	case "status":
 		g.notice(ctx, in, g.StatusText())
 		return
@@ -292,6 +300,7 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 		return
 	}
 	g.setWorkingForTurn(turn)
+	g.armStop(turn)
 }
 
 // queueMessage persists a message for an offline runner and reports the depth
@@ -339,6 +348,7 @@ func (g *Gateway) abandonTurn(ctx context.Context, turn *turnContext, reason str
 	g.turns.Delete(turn.TurnID)
 	g.heldFiles.Delete(turn.TurnID)
 	g.clearWorking(turn.ThreadID)
+	g.settleStop(ctx, turn, false)
 	_ = g.store.FinishTurn(turn.TurnID, store.TurnError, reason, time.Since(turn.StartedAt).Milliseconds(), 0)
 	g.endThreadTurn(ctx, turn.ThreadID)
 }
@@ -367,6 +377,7 @@ func (g *Gateway) drainQueue(ctx context.Context, conn *Conn) {
 			turn.touch()
 			turn.queued.Store(false)
 			g.setWorkingForTurn(turn)
+			g.armStop(turn)
 		}
 		if err := g.store.DeleteQueued(m.ID); err != nil {
 			g.log.Error("queue delete failed", "id", m.ID, "err", err)
@@ -584,7 +595,7 @@ func threadNoticeText(pos int) string {
 	if pos <= 0 {
 		return "▶️ The earlier turn in this thread finished — starting yours now…"
 	}
-	return fmt.Sprintf("⏳ This thread already has a turn running — you're #%d behind it. I'll start yours when it finishes (one turn per thread at a time).", pos)
+	return fmt.Sprintf("⏳ This thread already has a turn running — you're #%d behind it. I'll start yours when it finishes (one turn per thread at a time). `!stop` stops it and drops the queue.", pos)
 }
 
 func (g *Gateway) postThreadNotice(ctx context.Context, in surface.Inbound, persona surface.Persona, pos int) (surface.Ref, error) {
@@ -630,7 +641,7 @@ func parseCommand(text string) (rest, cmd, arg string) {
 	}
 	cmd = strings.ToLower(fields[0])
 	switch cmd {
-	case "new", "rebind", "status", "cost", "routes":
+	case "new", "rebind", "status", "cost", "routes", "stop":
 	case "runner":
 		if len(fields) > 1 {
 			arg = fields[1]

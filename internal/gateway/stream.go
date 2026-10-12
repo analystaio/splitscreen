@@ -225,6 +225,24 @@ func (s *stream) NoteStep(id, title string, failed bool) {
 	s.dirty = true
 }
 
+// StopRunning closes out steps still running when a turn is stopped. A tool the
+// harness abandoned never reports an end, and would otherwise spin forever on a
+// surface that renders step status.
+func (s *stream) StopRunning() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range s.order {
+		st := s.steps[id]
+		if st.Status != surface.StepRunning {
+			continue
+		}
+		st.Status = surface.StepFailed
+		st.Output = "stopped"
+		s.changed[id] = true
+		s.dirty = true
+	}
+}
+
 // take collects everything not yet sent. Called under the lock.
 func (s *stream) take() surface.StreamUpdate {
 	u := surface.StreamUpdate{Text: s.body.String()[s.sent:]}

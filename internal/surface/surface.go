@@ -76,10 +76,21 @@ type Decision struct {
 	Ref       Ref
 }
 
+// StopRequest is someone asking for a running turn to stop, by pressing the
+// turn's stop control.
+type StopRequest struct {
+	Surface string
+	TurnID  string
+	User    User
+	// Ref is the control that was pressed, so it can be updated in place.
+	Ref Ref
+}
+
 // Handler receives everything a surface produces. Implemented by the gateway.
 type Handler interface {
 	OnMessage(context.Context, Inbound)
 	OnDecision(context.Context, Decision)
+	OnStop(context.Context, StopRequest)
 }
 
 // Persona is the display identity a runner posts under. One bot user can wear
@@ -187,6 +198,24 @@ type Prompt struct {
 	Tool      string
 	Summary   string
 	Detail    string
+}
+
+// StopControl is the control offered on a turn in flight, the chat-side
+// equivalent of Esc in a terminal.
+type StopControl struct {
+	Channel string
+	Thread  string
+	Persona Persona
+	TurnID  string
+}
+
+// Stopper is implemented by surfaces that can offer a stop control on a running
+// turn. Optional, like Streamer: without it a turn can still be stopped by
+// command. Resolve replaces a pressed control with its outcome; Delete removes
+// one whose turn finished on its own, since a spent control is clutter.
+type Stopper interface {
+	PostStop(ctx context.Context, c StopControl) (Ref, error)
+	Delete(ctx context.Context, ref Ref) error
 }
 
 // Upload is a file sent from a runner to the surface.

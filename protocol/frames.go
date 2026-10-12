@@ -24,6 +24,7 @@ const (
 	TypePermissionResponse FrameType = "permission.response"
 	TypeMCPResponse        FrameType = "mcp.response"
 	TypeCredentialGrant    FrameType = "credential.grant"
+	TypeTurnCancel         FrameType = "turn.cancel"
 
 	// Runner -> gateway.
 	TypeTextDelta         FrameType = "text.delta"
@@ -388,6 +389,9 @@ type Done struct {
 	SessionID    string `json:"session,omitempty"`
 	DurationMS   int64  `json:"duration_ms"`
 	NumToolCalls int    `json:"num_tool_calls"`
+	// Interrupted reports that the turn ended because a turn.cancel stopped
+	// it, not because the harness finished. The session survives either way.
+	Interrupted bool `json:"interrupted,omitempty"`
 }
 
 func (*Done) Type() FrameType      { return TypeDone }
@@ -418,6 +422,31 @@ func (e *Error) Validate() error {
 		return errors.New("error: code is required")
 	}
 	return nil
+}
+
+// TurnCancel asks the runner to stop a turn in flight — what Esc does in a
+// terminal. The harness session is kept, so the next message continues the
+// same conversation; the turn still ends with done (interrupted) or error.
+type TurnCancel struct {
+	ThreadID string `json:"thread"`
+	TurnID   string `json:"turn"`
+	// By is who asked, for the runner's log. The gateway has already decided
+	// they may.
+	By *UserRef `json:"by,omitempty"`
+}
+
+func (*TurnCancel) Type() FrameType      { return TypeTurnCancel }
+func (*TurnCancel) Direction() Direction { return DirDown }
+
+func (t *TurnCancel) Validate() error {
+	var errs []error
+	if t.ThreadID == "" {
+		errs = append(errs, errors.New("turn.cancel: thread is required"))
+	}
+	if t.TurnID == "" {
+		errs = append(errs, errors.New("turn.cancel: turn is required"))
+	}
+	return errors.Join(errs...)
 }
 
 // ---------------------------------------------------------------------------

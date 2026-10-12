@@ -221,6 +221,19 @@ func (s *Surface) handleInteraction(ctx context.Context, h surface.Handler, cb s
 		return
 	}
 	for _, a := range cb.ActionCallback.BlockActions {
+		if a.ActionID == stopAction {
+			h.OnStop(ctx, surface.StopRequest{
+				Surface: s.Name(),
+				TurnID:  a.Value,
+				User:    surface.User{ID: cb.User.ID, Display: cb.User.Name},
+				Ref: surface.Ref{
+					Channel: cb.Channel.ID,
+					Thread:  cb.Message.ThreadTimestamp,
+					ID:      cb.Message.Timestamp,
+				},
+			})
+			continue
+		}
 		if !strings.HasPrefix(a.ActionID, permissionAction) {
 			continue
 		}
@@ -342,6 +355,40 @@ func button(label, decision, requestID string, style slack.Style) *slack.ButtonB
 		b.Style = style
 	}
 	return b
+}
+
+// stopAction is the action_id of a turn's stop button. The turn id rides in
+// the value, like the permission buttons' request id.
+const stopAction = "splitscreen_stop"
+
+// PostStop offers a Stop button under a running turn. It is its own message
+// because a streaming message cannot carry blocks until it is closed, which is
+// exactly when a stop button stops being useful.
+func (s *Surface) PostStop(ctx context.Context, c surface.StopControl) (surface.Ref, error) {
+	btn := slack.NewButtonBlockElement(stopAction, c.TurnID,
+		slack.NewTextBlockObject(slack.PlainTextType, "Stop", false, false))
+	btn.Style = slack.StyleDanger
+	opts := []slack.MsgOption{
+		slack.MsgOptionBlocks(slack.NewActionBlock(stopAction, btn)),
+		slack.MsgOptionText("Working — press Stop to interrupt", false),
+	}
+	if c.Thread != "" {
+		opts = append(opts, slack.MsgOptionTS(c.Thread))
+	}
+	opts = append(opts, personaOptions(c.Persona)...)
+	channel, ts, err := s.api.PostMessageContext(ctx, c.Channel, opts...)
+	if err != nil {
+		return surface.Ref{}, fmt.Errorf("slack: post stop control: %w", err)
+	}
+	return surface.Ref{Channel: channel, Thread: c.Thread, ID: ts}, nil
+}
+
+// Delete removes a message the app posted.
+func (s *Surface) Delete(ctx context.Context, ref surface.Ref) error {
+	if _, _, err := s.api.DeleteMessageContext(ctx, ref.Channel, ref.ID); err != nil {
+		return fmt.Errorf("slack: delete: %w", err)
+	}
+	return nil
 }
 
 // Resolve strips the buttons from a decided prompt. Leaving live controls on a

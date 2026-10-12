@@ -172,6 +172,8 @@ const (
 	TurnRunning = "running"
 	TurnDone    = "done"
 	TurnError   = "error"
+	// TurnStopped is a turn someone stopped from the surface.
+	TurnStopped = "stopped"
 )
 
 type Turn struct {

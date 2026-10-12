@@ -17,12 +17,19 @@ type recordingHandler struct {
 	mu        sync.Mutex
 	messages  []surface.Inbound
 	decisions []surface.Decision
+	stops     []surface.StopRequest
 }
 
 func (h *recordingHandler) OnMessage(_ context.Context, in surface.Inbound) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.messages = append(h.messages, in)
+}
+
+func (h *recordingHandler) OnStop(_ context.Context, r surface.StopRequest) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.stops = append(h.stops, r)
 }
 
 func (h *recordingHandler) OnDecision(_ context.Context, d surface.Decision) {
@@ -185,6 +192,29 @@ func TestDecisionParsedFromButton(t *testing.T) {
 	}
 }
 
+func TestStopParsedFromButton(t *testing.T) {
+	s := &Surface{}
+	h := &recordingHandler{}
+	s.handleInteraction(context.Background(), h, slack.InteractionCallback{
+		Type: slack.InteractionTypeBlockActions,
+		User: slack.User{ID: "U9", Name: "alice"},
+		Channel: slack.Channel{GroupConversation: slack.GroupConversation{
+			Conversation: slack.Conversation{ID: "C1"},
+		}},
+		Message: slack.Message{Msg: slack.Msg{Timestamp: "p1", ThreadTimestamp: "T1"}},
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{{ActionID: stopAction, Value: "turn_abc"}},
+		},
+	})
+	if len(h.stops) != 1 || len(h.decisions) != 0 {
+		t.Fatalf("stops = %d decisions = %d", len(h.stops), len(h.decisions))
+	}
+	st := h.stops[0]
+	if st.TurnID != "turn_abc" || st.User.ID != "U9" || st.Ref.ID != "p1" || st.Ref.Thread != "T1" {
+		t.Fatalf("stop = %+v", st)
+	}
+}
+
 func TestUnrelatedInteractionIgnored(t *testing.T) {
 	s := &Surface{}
 	h := &recordingHandler{}
@@ -194,8 +224,8 @@ func TestUnrelatedInteractionIgnored(t *testing.T) {
 			BlockActions: []*slack.BlockAction{{ActionID: "someone_elses_button", Value: "x|y"}},
 		},
 	})
-	if len(h.decisions) != 0 {
-		t.Fatal("an unrelated button was treated as a permission decision")
+	if len(h.decisions) != 0 || len(h.stops) != 0 {
+		t.Fatal("an unrelated button was treated as a permission decision or a stop")
 	}
 }
 

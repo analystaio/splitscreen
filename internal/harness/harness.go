@@ -60,6 +60,9 @@ type Event struct {
 	SessionID  string
 	Usage      Usage
 	ToolCalls  int
+	// Interrupted marks an EventDone that ended the turn because Interrupt
+	// stopped it rather than because the model finished.
+	Interrupted bool
 }
 
 // Image is an inline image passed to the harness.
@@ -117,6 +120,15 @@ type Session interface {
 	Close() error
 	// Running reports whether the process is alive.
 	Running() bool
+}
+
+// Interrupter is implemented by sessions that can stop the turn in flight and
+// stay alive — what Esc does in a terminal. The turn then ends with an
+// EventDone marked Interrupted. Optional: a runner whose session lacks it ends
+// the process instead, which costs the warm session but not the conversation,
+// since the next message resumes it.
+type Interrupter interface {
+	Interrupt(ctx context.Context) error
 }
 
 // Adapter starts sessions for one harness.

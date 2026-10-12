@@ -349,6 +349,8 @@ func (r *Runner) handleFrame(ctx context.Context, f protocol.Frame) {
 		}
 	case *protocol.Message:
 		go r.handleMessage(context.WithoutCancel(ctx), fr)
+	case *protocol.TurnCancel:
+		go r.cancelTurn(context.WithoutCancel(ctx), fr)
 	case *protocol.PermissionResponse:
 		r.resolvePending(fr.RequestID, fr)
 	case *protocol.CredentialGrant:

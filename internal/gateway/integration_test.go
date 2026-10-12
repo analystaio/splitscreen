@@ -35,6 +35,9 @@ type fakeSurface struct {
 	seq       int
 	statuses  []surface.Status
 	statusErr func(surface.Status) error
+
+	stopControls []surface.StopControl
+	deleted      []string
 }
 
 func (f *fakeSurface) SetStatus(_ context.Context, st surface.Status) error {
