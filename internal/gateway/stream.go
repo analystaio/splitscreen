@@ -56,6 +56,9 @@ type stream struct {
 	dirty  bool
 	closed bool
 
+	// footer goes under the finished message; see surface.StreamUpdate.
+	footer string
+
 	stop chan struct{}
 	done chan struct{}
 }
@@ -243,6 +246,22 @@ func (s *stream) StopRunning() {
 	}
 }
 
+// SetFooter sets the line shown under the finished message. Call it before
+// Close; it rides on the final flush only.
+func (s *stream) SetFooter(text string) {
+	s.mu.Lock()
+	s.footer = text
+	s.mu.Unlock()
+}
+
+// Posted reports whether the turn's message exists on the surface yet, so
+// controls that belong under it are not posted above it.
+func (s *stream) Posted() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.posted
+}
+
 // take collects everything not yet sent. Called under the lock.
 func (s *stream) take() surface.StreamUpdate {
 	u := surface.StreamUpdate{Text: s.body.String()[s.sent:]}
@@ -285,6 +304,11 @@ func (s *stream) render(final bool) string {
 			b.WriteString(activityLine(s.steps[id]))
 			b.WriteString("_")
 		}
+	}
+	if final && s.footer != "" {
+		b.WriteString("\n\n_")
+		b.WriteString(s.footer)
+		b.WriteString("_")
 	}
 	return strings.TrimSpace(b.String())
 }
@@ -393,6 +417,9 @@ func (s *stream) open(ctx context.Context, srf surface.Surface) surface.Stream {
 func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) bool {
 	s.mu.Lock()
 	u := s.take()
+	if final {
+		u.Footer = s.footer
+	}
 	s.dirty = false
 	s.mu.Unlock()
 

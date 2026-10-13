@@ -144,6 +144,10 @@ type Step struct {
 type StreamUpdate struct {
 	Text  string
 	Steps []Step
+	// Footer is a quiet line under the finished message saying how the turn
+	// ended, when that is worth saying ("Stopped by …"). Only the closing
+	// update carries it.
+	Footer string
 }
 
 // Stream is a message built up as the turn runs.

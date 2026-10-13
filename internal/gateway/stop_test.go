@@ -34,9 +34,9 @@ func (f *fakeSurface) stopState() (controls []surface.StopControl, deleted, reso
 }
 
 func quickStopControl(t *testing.T) {
-	old := stopControlDelay
+	oldDelay, oldWait := stopControlDelay, stopControlMaxWait
 	stopControlDelay = 20 * time.Millisecond
-	t.Cleanup(func() { stopControlDelay = old })
+	t.Cleanup(func() { stopControlDelay, stopControlMaxWait = oldDelay, oldWait })
 }
 
 func TestStopButtonCancelsTheTurn(t *testing.T) {
@@ -50,6 +50,7 @@ func TestStopButtonCancelsTheTurn(t *testing.T) {
 		User: surface.User{ID: "U1"}, Text: "do a long thing", Addressed: true,
 	})
 	msg := readFrame[*protocol.Message](t, ws)
+	send(t, ws, &protocol.ToolStart{ThreadID: msg.ThreadID, TurnID: msg.TurnID, CallID: "c1", Tool: "Bash", Summary: "make"})
 
 	var control surface.StopControl
 	eventually(t, "stop control", func() bool {
@@ -74,10 +75,19 @@ func TestStopButtonCancelsTheTurn(t *testing.T) {
 	}
 
 	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: msg.TurnID, Interrupted: true})
-	eventually(t, "stopped outcome", func() bool {
-		_, _, resolved := h.srf.stopState()
-		return len(resolved) > 0 && strings.Contains(resolved[len(resolved)-1], "Stopped by <@U2>")
+	// The outcome is a footer on the turn's own message, and the control goes.
+	eventually(t, "stop noted on the turn's message", func() bool {
+		return strings.Contains(h.srf.updatesText(), "Stopped by <@U2>")
 	})
+	eventually(t, "control deleted", func() bool {
+		_, deleted, _ := h.srf.stopState()
+		return len(deleted) == 1
+	})
+	for _, p := range h.srf.postsCopy() {
+		if strings.Contains(p.Text, "Stopped by") {
+			t.Fatalf("stop outcome posted as its own message: %q", p.Text)
+		}
+	}
 	if strings.Contains(h.srf.allText(), "no output") {
 		t.Fatal("a stopped turn was reported as having no output")
 	}
@@ -103,6 +113,7 @@ func TestUnpressedStopControlIsDeleted(t *testing.T) {
 		User: surface.User{ID: "U1"}, Text: "hi", Addressed: true,
 	})
 	msg := readFrame[*protocol.Message](t, ws)
+	send(t, ws, &protocol.ToolStart{ThreadID: msg.ThreadID, TurnID: msg.TurnID, CallID: "c1", Tool: "Read"})
 	eventually(t, "stop control", func() bool {
 		cs, _, _ := h.srf.stopState()
 		return len(cs) == 1
@@ -166,5 +177,30 @@ func TestBangStopWithNothingRunning(t *testing.T) {
 	})
 	eventually(t, "nothing-running notice", func() bool {
 		return strings.Contains(h.srf.allText(), "Nothing is running")
+	})
+}
+
+// The control waits for the turn's message so it sits under it, but a turn
+// that stays silent still gets one.
+func TestStopControlWaitsForTheTurnsMessage(t *testing.T) {
+	quickStopControl(t)
+	stopControlMaxWait = 300 * time.Millisecond
+	h := newHarness(t)
+	ws := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, ws)
+
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T1",
+		User: surface.User{ID: "U1"}, Text: "think hard", Addressed: true,
+	})
+	readFrame[*protocol.Message](t, ws)
+
+	time.Sleep(150 * time.Millisecond)
+	if cs, _, _ := h.srf.stopState(); len(cs) != 0 {
+		t.Fatal("control posted before the turn had a message to sit under")
+	}
+	eventually(t, "control after the wait", func() bool {
+		cs, _, _ := h.srf.stopState()
+		return len(cs) == 1
 	})
 }

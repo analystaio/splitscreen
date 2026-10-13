@@ -163,6 +163,8 @@ func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
 	if len(chunks) > 0 {
 		opts = append(opts, slack.MsgOptionChunks(chunks...))
 	}
+	footer := footerBlocks(u.Footer)
+	opts = append(opts, footer...)
 	_, _, err := st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID, opts...)
 	if err == nil {
 		return nil
@@ -177,6 +179,7 @@ func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
 	if title != "" {
 		fin = append(fin, slack.MsgOptionChunks(slack.NewPlanUpdateChunk(title)))
 	}
+	fin = append(fin, footer...)
 	_, _, _ = st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID, fin...)
 	return fmt.Errorf("slack: stop stream: %w", err)
 }
@@ -315,4 +318,15 @@ func truncateTitle(s string) string {
 		return "tool"
 	}
 	return truncate(s, 250)
+}
+
+// footerBlocks renders a turn's footer as a context block, which stopStream
+// places under everything the stream wrote: small grey text, part of the
+// message rather than another post in the thread.
+func footerBlocks(text string) []slack.MsgOption {
+	if text == "" {
+		return nil
+	}
+	return []slack.MsgOption{slack.MsgOptionBlocks(slack.NewContextBlock("",
+		slack.NewTextBlockObject(slack.MarkdownType, ToMrkdwn(text), false, false)))}
 }
