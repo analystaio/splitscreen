@@ -348,7 +348,7 @@ func (g *Gateway) abandonTurn(ctx context.Context, turn *turnContext, reason str
 	g.turns.Delete(turn.TurnID)
 	g.heldFiles.Delete(turn.TurnID)
 	g.clearWorking(turn.ThreadID)
-	g.settleStop(ctx, turn, false)
+	g.settleStop(ctx, turn, false, false)
 	_ = g.store.FinishTurn(turn.TurnID, store.TurnError, reason, time.Since(turn.StartedAt).Milliseconds(), 0)
 	g.endThreadTurn(ctx, turn.ThreadID)
 }

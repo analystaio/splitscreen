@@ -363,7 +363,7 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 			})
 		}
 		g.clearWorking(turn.ThreadID)
-		g.settleStop(ctx, turn, false)
+		g.settleStop(ctx, turn, false, false)
 		g.turnSlotFreed(ctx, runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 		return true
@@ -415,7 +415,7 @@ func (g *Gateway) sweepStrandedOnce(ctx context.Context, timeout time.Duration) 
 			"stranded: no activity past timeout (Done lost or misattributed)",
 			time.Since(turn.StartedAt).Milliseconds(), 0)
 		g.clearWorking(turn.ThreadID)
-		g.settleStop(ctx, turn, false)
+		g.settleStop(ctx, turn, false, false)
 		g.turnSlotFreed(ctx, turn.Runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 		return true
@@ -614,10 +614,17 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 	}
 	defer g.turns.Delete(fr.TurnID)
 
+	noted := false
 	if v, loaded := g.streams.Load(fr.TurnID); loaded {
 		s := v.(*stream)
 		if fr.Interrupted {
 			s.StopRunning()
+		}
+		// A stop is reported on the turn's own message, so a stopped turn
+		// reads as one message rather than an answer and a separate notice.
+		if note := turn.stopNote(fr.Interrupted); note != "" && s.HasOutput() {
+			s.SetFooter(note)
+			noted = true
 		}
 		s.Close(ctx)
 		// A stopped turn's silence is explained by the stop control.
@@ -649,7 +656,7 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 	}
 	_ = g.store.TouchThread(turn.ThreadID)
 	g.clearWorking(turn.ThreadID)
-	g.settleStop(ctx, turn, fr.Interrupted)
+	g.settleStop(ctx, turn, fr.Interrupted, noted)
 	g.turnSlotFreed(ctx, turn.Runner)
 	g.endThreadTurn(ctx, turn.ThreadID)
 }
@@ -675,7 +682,7 @@ func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error
 			time.Since(turn.StartedAt).Milliseconds(), 0)
 		g.turns.Delete(fr.TurnID)
 		g.clearWorking(turn.ThreadID)
-		g.settleStop(ctx, turn, false)
+		g.settleStop(ctx, turn, false, false)
 		g.turnSlotFreed(ctx, turn.Runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 	}

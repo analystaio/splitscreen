@@ -144,3 +144,12 @@ func TestTextBecomesAMarkdownChunk(t *testing.T) {
 		t.Fatalf("text did not become a markdown chunk: %+v", chunks[0])
 	}
 }
+
+func TestFooterIsAContextBlockOnlyWhenSet(t *testing.T) {
+	if footerBlocks("") != nil {
+		t.Fatal("an empty footer added blocks")
+	}
+	if len(footerBlocks("Stopped by <@U1> after 13s.")) != 1 {
+		t.Fatal("a footer did not become one block option")
+	}
+}

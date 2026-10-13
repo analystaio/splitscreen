@@ -23,6 +23,12 @@ import (
 // within a second is flicker, not help.
 var stopControlDelay = 5 * time.Second
 
+// stopControlMaxWait bounds how long the control waits for the turn's own
+// message to appear, so it lands under the answer rather than above it. A turn
+// that is still silent after this gets the control anyway: being able to stop a
+// long think matters more than where the button sits.
+var stopControlMaxWait = 30 * time.Second
+
 // stopState is one turn's stop control and what became of it.
 type stopState struct {
 	mu    sync.Mutex
@@ -32,6 +38,8 @@ type stopState struct {
 	ended bool
 	// by is who asked to stop, once someone has.
 	by *surface.User
+	// armedAt is when the control was first due, for stopControlMaxWait.
+	armedAt time.Time
 }
 
 // canCancel reports whether a runner is connected and new enough to act on
@@ -68,14 +76,26 @@ func (g *Gateway) armStop(turn *turnContext) {
 	st.timer = time.AfterFunc(stopControlDelay, func() { g.postStop(turn, srf, stopper) })
 }
 
+// stopControlRetry is how often a due control checks again for the turn's
+// message.
+const stopControlRetry = time.Second
+
 func (g *Gateway) postStop(turn *turnContext, srf surface.Surface, stopper surface.Stopper) {
 	st := &turn.stop
 	st.mu.Lock()
-	skip := st.ended || st.by != nil
-	st.mu.Unlock()
-	if skip {
+	if st.ended || st.by != nil {
+		st.mu.Unlock()
 		return
 	}
+	if st.armedAt.IsZero() {
+		st.armedAt = time.Now()
+	}
+	if !g.turnMessagePosted(turn) && time.Since(st.armedAt) < stopControlMaxWait {
+		st.timer = time.AfterFunc(stopControlRetry, func() { g.postStop(turn, srf, stopper) })
+		st.mu.Unlock()
+		return
+	}
+	st.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ref, err := stopper.PostStop(ctx, surface.StopControl{
@@ -104,8 +124,29 @@ func (g *Gateway) postStop(turn *turnContext, srf surface.Surface, stopper surfa
 	}
 }
 
+// turnMessagePosted reports whether the turn's streamed message exists yet.
+func (g *Gateway) turnMessagePosted(turn *turnContext) bool {
+	v, ok := g.streams.Load(turn.TurnID)
+	return ok && v.(*stream).Posted()
+}
+
 func stoppingText(by *surface.User) string {
-	return fmt.Sprintf("⏹ Stopping… — <@%s>", by.ID)
+	return fmt.Sprintf("Stopping… — requested by <@%s>", by.ID)
+}
+
+// stopNote is how a stopped turn's message ends, or "" when nobody asked to
+// stop it.
+func (turn *turnContext) stopNote(interrupted bool) string {
+	turn.stop.mu.Lock()
+	by := turn.stop.by
+	turn.stop.mu.Unlock()
+	if by == nil {
+		return ""
+	}
+	if !interrupted {
+		return fmt.Sprintf("Finished before the stop from <@%s> landed.", by.ID)
+	}
+	return fmt.Sprintf("Stopped by <@%s> after %s.", by.ID, time.Since(turn.StartedAt).Round(time.Second))
 }
 
 // OnStop handles a press of a turn's Stop control.
@@ -209,9 +250,11 @@ func (g *Gateway) denyPromptsFor(ctx context.Context, turn *turnContext, user su
 }
 
 // settleStop retires a turn's Stop control when the turn ends, however it
-// ends. A control nobody pressed is deleted; a pressed one is replaced with
-// the outcome, which is the thread's record that the turn was cut short.
-func (g *Gateway) settleStop(ctx context.Context, turn *turnContext, interrupted bool) {
+// ends. The control is always deleted: how the turn ended belongs on the turn's
+// own message (noted reports it was put there as a footer), and is posted on its
+// own only when there is no message to carry it.
+func (g *Gateway) settleStop(ctx context.Context, turn *turnContext, interrupted, noted bool) {
+	note := turn.stopNote(interrupted)
 	st := &turn.stop
 	st.mu.Lock()
 	if st.ended {
@@ -222,37 +265,36 @@ func (g *Gateway) settleStop(ctx context.Context, turn *turnContext, interrupted
 	if st.timer != nil {
 		st.timer.Stop()
 	}
-	ref, by := st.ref, st.by
+	ref := st.ref
 	st.mu.Unlock()
 
 	srf, ok := g.surfaceFor(turn.Surface)
 	if !ok {
 		return
 	}
-	if by == nil {
-		if ref == (surface.Ref{}) {
-			return
-		}
+	if ref != (surface.Ref{}) {
+		deleted := false
 		if stopper, ok := srf.(surface.Stopper); ok {
 			if err := stopper.Delete(ctx, ref); err != nil {
 				g.log.Warn("stop control delete failed", "turn", turn.TurnID, "err", err)
+			} else {
+				deleted = true
 			}
 		}
-		return
+		if !deleted {
+			// A control that cannot be deleted must at least stop looking live.
+			text := note
+			if text == "" || noted {
+				text = "Finished."
+			}
+			_ = srf.Resolve(ctx, ref, text)
+			return
+		}
 	}
-
-	text := fmt.Sprintf("⏹ Stopped by <@%s> after %s.", by.ID, time.Since(turn.StartedAt).Round(time.Second))
-	if !interrupted {
-		text = fmt.Sprintf("Finished before the stop from <@%s> landed.", by.ID)
-	}
-	if ref == (surface.Ref{}) {
+	if note != "" && !noted {
 		_, _ = srf.Post(ctx, surface.Post{
-			Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona, Text: text,
+			Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona, Text: "_" + note + "_",
 		})
-		return
-	}
-	if err := srf.Resolve(ctx, ref, text); err != nil {
-		g.log.Warn("stop control update failed", "turn", turn.TurnID, "err", err)
 	}
 }
 
