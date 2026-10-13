@@ -34,8 +34,12 @@ func (f *fakeSurface) stopState() (controls []surface.StopControl, deleted, reso
 }
 
 func quickStopControl(t *testing.T) {
+	// Well above the test stream interval (20ms), as production's 5s is above
+	// its 700ms: a turn with output has its message before the control is due.
+	// Equal values made the order a coin flip, and a control that went first
+	// was correctly moved under the message, which these tests then miscounted.
 	old := stopControlDelay
-	stopControlDelay = 20 * time.Millisecond
+	stopControlDelay = 150 * time.Millisecond
 	t.Cleanup(func() { stopControlDelay = old })
 }
 
