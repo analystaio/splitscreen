@@ -53,6 +53,8 @@ func TestRoundTrip(t *testing.T) {
 			Known: true,
 		}},
 		{"done", DirUp, &Done{TurnID: "turn1", SessionID: "s1"}},
+		{"done interrupted", DirUp, &Done{TurnID: "turn1", Interrupted: true}},
+		{"turn.cancel", DirDown, &TurnCancel{ThreadID: "th1", TurnID: "turn1", By: &UserRef{ID: "U1"}}},
 		{"error", DirUp, &Error{Code: "harness_auth", Message: "token expired"}},
 		{"blob.begin", DirDown, &BlobBegin{BlobID: "b1", Name: "report.csv", Size: 1024}},
 		{"blob.end", DirDown, &BlobEnd{BlobID: "b1", OK: true}},
@@ -100,6 +102,7 @@ func TestEveryKnownTypeIsRoundTripped(t *testing.T) {
 		TypeHello, TypeHelloAck, TypeMessage, TypeTextDelta, TypeThought, TypeToolStart, TypeToolEnd,
 		TypePermissionRequest, TypePermissionResponse, TypeMCPCall, TypeMCPResponse,
 		TypeCredentialRequest, TypeCredentialGrant, TypeUsage, TypeDone, TypeError,
+		TypeTurnCancel,
 		TypeBlobBegin, TypeBlobEnd, TypePing, TypePong, TypeBundlePush,
 	} {
 		covered[ft] = true

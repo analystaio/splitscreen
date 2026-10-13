@@ -312,3 +312,63 @@ func TestBuildArgsStrictUnlessLoose(t *testing.T) {
 		t.Fatalf("loose args = %v: the runner's own servers must still be passed", loose)
 	}
 }
+
+// The CLI reports an interrupted turn as an error result. After Interrupt it
+// is the outcome that was asked for, so it must end the turn as done.
+func TestInterruptedResultIsDone(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	s := &session{cmd: cmd, events: make(chan harness.Event, 64)}
+	s.running.Store(true)
+	s.interrupted.Store(true)
+	go s.readStdout(io.NopCloser(strings.NewReader(
+		`{"type":"result","subtype":"error_during_execution","is_error":true}`)))
+
+	var done bool
+	for _, ev := range collect(t, s) {
+		switch ev.Kind {
+		case harness.EventError:
+			t.Fatalf("interrupt reported as an error: %q", ev.Error)
+		case harness.EventDone:
+			if !ev.Interrupted {
+				t.Fatal("done is not marked interrupted")
+			}
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("no done event was emitted")
+	}
+}
+
+// Interrupt speaks the CLI's control protocol on stdin, and a later Send
+// clears the flag so the next turn's real failure is not relabeled.
+func TestInterruptWritesControlRequest(t *testing.T) {
+	var buf strings.Builder
+	s := &session{stdin: nopWriteCloser{&buf}, events: make(chan harness.Event, 1)}
+	s.running.Store(true)
+	if err := s.Interrupt(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	line := buf.String()
+	for _, want := range []string{`"type":"control_request"`, `"subtype":"interrupt"`, `"request_id":"interrupt_1"`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("control request %q lacks %s", line, want)
+		}
+	}
+	if !s.interrupted.Load() {
+		t.Fatal("interrupt flag not set")
+	}
+	if err := s.Send(t.Context(), harness.Input{Text: "next"}); err != nil {
+		t.Fatal(err)
+	}
+	if s.interrupted.Load() {
+		t.Fatal("send left the interrupt flag set")
+	}
+}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }

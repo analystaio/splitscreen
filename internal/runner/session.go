@@ -35,6 +35,10 @@ type threadSession struct {
 	turnMu       sync.RWMutex
 	currentTurn  string
 	busy         bool
+	// cancelled marks the current turn as stopped on request, so however it
+	// ends — interrupted, killed, or erroring on the way out — it is reported
+	// as interrupted rather than as a failure.
+	cancelled bool
 
 	sendMu sync.Mutex
 }
@@ -43,8 +47,34 @@ func (t *threadSession) setTurn(id string) {
 	t.turnMu.Lock()
 	t.currentTurn = id
 	t.busy = true
+	t.cancelled = false
 	t.lastActivity = time.Now()
 	t.turnMu.Unlock()
+}
+
+// markCancelled flags turn id as stopped on request. It reports false when
+// that turn is not the one running: finished already, or never started here.
+func (t *threadSession) markCancelled(id string) bool {
+	t.turnMu.Lock()
+	defer t.turnMu.Unlock()
+	if !t.busy || t.currentTurn != id {
+		return false
+	}
+	t.cancelled = true
+	return true
+}
+
+func (t *threadSession) wasCancelled() bool {
+	t.turnMu.RLock()
+	defer t.turnMu.RUnlock()
+	return t.cancelled
+}
+
+// runningTurn reports whether turn id is still the one in flight.
+func (t *threadSession) runningTurn(id string) bool {
+	t.turnMu.RLock()
+	defer t.turnMu.RUnlock()
+	return t.busy && t.currentTurn == id
 }
 
 // endTurn marks the session as between turns. The turn id is kept so late
@@ -343,16 +373,26 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			sid := ts.sessionID
 			ts.sessionMu.Unlock()
 			r.rememberSession(ts.threadID, sid)
+			interrupted := ev.Interrupted || ts.wasCancelled()
 			ts.endTurn()
 			r.settleActive()
 			_ = r.send(ctx, &protocol.Done{
 				ThreadID: ts.threadID, TurnID: turn,
 				SessionID: sid, NumToolCalls: ev.ToolCalls,
+				Interrupted: interrupted,
 			})
 
 		case harness.EventError:
+			cancelled := ts.wasCancelled()
 			ts.endTurn()
 			r.settleActive()
+			if cancelled {
+				// The error is the stop landing, not a fault worth a warning.
+				_ = r.send(ctx, &protocol.Done{
+					ThreadID: ts.threadID, TurnID: turn, Interrupted: true,
+				})
+				continue
+			}
 			_ = r.send(ctx, &protocol.Error{
 				ThreadID: ts.threadID, TurnID: turn,
 				Code: "harness_error", Message: ev.Error,
@@ -369,8 +409,17 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 	// the turn is finalized and the slot released.
 	if ts.isBusy() {
 		turn := ts.turn()
+		cancelled := ts.wasCancelled()
 		ts.endTurn()
 		r.settleActive()
+		if cancelled {
+			// Killed because an interrupt did not land in time: the stop the
+			// user asked for, with the session resumable on the next message.
+			_ = r.send(ctx, &protocol.Done{
+				ThreadID: ts.threadID, TurnID: turn, Interrupted: true,
+			})
+			return
+		}
 		r.log.Warn("session ended with an open turn; reporting error",
 			"thread", ts.threadID, "turn", turn)
 		_ = r.send(ctx, &protocol.Error{
@@ -378,6 +427,67 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			Code: "session_ended", Message: "the harness session ended before the turn completed",
 		})
 	}
+}
+
+// interruptGrace is how long an interrupt has to end a turn before the runner
+// stops waiting and kills the process. A tool that ignores the signal must not
+// be able to keep a stopped turn running.
+var interruptGrace = 15 * time.Second
+
+// cancelTurn stops a turn in flight. It interrupts the harness when the session
+// supports that — the warm process and its prompt cache survive — and kills the
+// process otherwise, or when the interrupt does not land in time. Either way the
+// session id survives, so the next message carries on the same conversation,
+// and the turn is reported as done (interrupted) by pumpEvents.
+func (r *Runner) cancelTurn(ctx context.Context, fr *protocol.TurnCancel) {
+	v, ok := r.sessions.Load(fr.ThreadID)
+	if !ok {
+		r.log.Info("cancel for a thread with no session", "thread", fr.ThreadID, "turn", fr.TurnID)
+		return
+	}
+	ts := v.(*threadSession)
+	if !ts.markCancelled(fr.TurnID) {
+		r.log.Info("cancel for a turn that is not running", "thread", fr.ThreadID, "turn", fr.TurnID)
+		return
+	}
+	by := ""
+	if fr.By != nil {
+		by = fr.By.ID
+	}
+	r.log.Info("stopping turn", "thread", fr.ThreadID, "turn", fr.TurnID, "by", by)
+
+	ts.sessionMu.Lock()
+	sess := ts.sess
+	ts.sessionMu.Unlock()
+	if sess == nil {
+		return
+	}
+	if in, ok := sess.(harness.Interrupter); ok {
+		err := in.Interrupt(ctx)
+		if err == nil && waitTurnEnd(ts, fr.TurnID, interruptGrace) {
+			return
+		}
+		r.log.Warn("interrupt did not end the turn; ending the session",
+			"thread", fr.ThreadID, "turn", fr.TurnID, "err", err)
+	}
+	ts.sessionMu.Lock()
+	if ts.sess == sess {
+		_ = sess.Close()
+		ts.sess = nil
+	}
+	ts.sessionMu.Unlock()
+}
+
+// waitTurnEnd polls until turn id is no longer running, or the deadline passes.
+func waitTurnEnd(ts *threadSession, id string, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if !ts.runningTurn(id) {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return !ts.runningTurn(id)
 }
 
 // endSession stops a thread's harness process. The session id survives, so the

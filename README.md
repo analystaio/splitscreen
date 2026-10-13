@@ -116,12 +116,21 @@ this replaces the per-runner allowlists a single-process bridge needs.
 
 | Command | Effect |
 |---|---|
+| `!stop` | Stop the running turn (like Esc in a terminal) and drop messages queued behind it |
 | `!new` | Start a fresh session in this thread |
 | `!rebind` | Move the thread to the channel's current runner |
 | `!runner <name>` | Pick a runner when starting a new thread |
 | `!status` | Runner roster, connection state, bundle versions, queue depths |
 | `!routes` | The routing table |
 | `!cost` | Spend and token usage for the last week |
+
+A turn that runs longer than a few seconds also gets a **Stop** button under
+it, which does the same as `!stop`. Stopping interrupts the harness and keeps
+the session, so the next message carries on the same conversation; the button
+is deleted when a turn finishes on its own. It needs interactivity enabled on
+the Slack app (the same setting the permission buttons use) and a runner on
+protocol 1.2 or later. An older runner gets no button, and `!stop` explains
+why instead of sending a request it would silently drop.
 
 `!status` and `!routes` also flag any routed channel the bot has not been
 invited into. That case is worth calling out because the platform simply never

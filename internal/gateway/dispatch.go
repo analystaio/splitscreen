@@ -363,6 +363,7 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 			})
 		}
 		g.clearWorking(turn.ThreadID)
+		g.settleStop(ctx, turn, false)
 		g.turnSlotFreed(ctx, runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 		return true
@@ -414,6 +415,7 @@ func (g *Gateway) sweepStrandedOnce(ctx context.Context, timeout time.Duration) 
 			"stranded: no activity past timeout (Done lost or misattributed)",
 			time.Since(turn.StartedAt).Milliseconds(), 0)
 		g.clearWorking(turn.ThreadID)
+		g.settleStop(ctx, turn, false)
 		g.turnSlotFreed(ctx, turn.Runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 		return true
@@ -614,8 +616,12 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 
 	if v, loaded := g.streams.Load(fr.TurnID); loaded {
 		s := v.(*stream)
+		if fr.Interrupted {
+			s.StopRunning()
+		}
 		s.Close(ctx)
-		if !s.HasOutput() {
+		// A stopped turn's silence is explained by the stop control.
+		if !s.HasOutput() && !fr.Interrupted {
 			if srf, ok := g.surfaceFor(turn.Surface); ok {
 				_, _ = srf.Post(ctx, surface.Post{
 					Channel: turn.Channel, Thread: turn.Thread,
@@ -634,11 +640,16 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 	if duration == 0 {
 		duration = time.Since(turn.StartedAt).Milliseconds()
 	}
-	if err := g.store.FinishTurn(fr.TurnID, store.TurnDone, "", duration, fr.NumToolCalls); err != nil {
+	status := store.TurnDone
+	if fr.Interrupted {
+		status = store.TurnStopped
+	}
+	if err := g.store.FinishTurn(fr.TurnID, status, "", duration, fr.NumToolCalls); err != nil {
 		g.log.Error("finish turn failed", "turn", fr.TurnID, "err", err)
 	}
 	_ = g.store.TouchThread(turn.ThreadID)
 	g.clearWorking(turn.ThreadID)
+	g.settleStop(ctx, turn, fr.Interrupted)
 	g.turnSlotFreed(ctx, turn.Runner)
 	g.endThreadTurn(ctx, turn.ThreadID)
 }
@@ -664,6 +675,7 @@ func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error
 			time.Since(turn.StartedAt).Milliseconds(), 0)
 		g.turns.Delete(fr.TurnID)
 		g.clearWorking(turn.ThreadID)
+		g.settleStop(ctx, turn, false)
 		g.turnSlotFreed(ctx, turn.Runner)
 		g.endThreadTurn(ctx, turn.ThreadID)
 	}
