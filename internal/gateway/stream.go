@@ -425,6 +425,7 @@ func (s *stream) open(ctx context.Context, srf surface.Surface) surface.Stream {
 	s.ref = st.Ref()
 	s.posted = true
 	s.mu.Unlock()
+	go s.gw.restackStop(s.turn)
 	return st
 }
 
@@ -526,6 +527,7 @@ func (s *stream) pushEdit(ctx context.Context, srf surface.Surface, final bool) 
 		s.posted, s.ref = true, newRef
 		s.commit()
 		s.mu.Unlock()
+		go s.gw.restackStop(s.turn)
 		return
 	}
 
