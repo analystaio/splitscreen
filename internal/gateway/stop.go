@@ -23,12 +23,6 @@ import (
 // within a second is flicker, not help.
 var stopControlDelay = 5 * time.Second
 
-// stopControlMaxWait bounds how long the control waits for the turn's own
-// message to appear, so it lands under the answer rather than above it. A turn
-// that is still silent after this gets the control anyway: being able to stop a
-// long think matters more than where the button sits.
-var stopControlMaxWait = 30 * time.Second
-
 // stopState is one turn's stop control and what became of it.
 type stopState struct {
 	mu    sync.Mutex
@@ -38,8 +32,9 @@ type stopState struct {
 	ended bool
 	// by is who asked to stop, once someone has.
 	by *surface.User
-	// armedAt is when the control was first due, for stopControlMaxWait.
-	armedAt time.Time
+	// above marks a control posted before the turn had a message, so it sits
+	// above the answer; it is moved under the answer when that appears.
+	above bool
 }
 
 // canCancel reports whether a runner is connected and new enough to act on
@@ -81,10 +76,10 @@ func (g *Gateway) armStop(turn *turnContext) {
 	st.timer = time.AfterFunc(stopControlDelay, func() { g.postStop(turn, srf, stopper) })
 }
 
-// stopControlRetry is how often a due control checks again for the turn's
-// message.
-const stopControlRetry = time.Second
-
+// postStop offers the control. It goes up on time even when the turn has no
+// message yet — a turn that only thinks or writes prose has none until it ends,
+// and being able to stop it matters more than where the button sits. A control
+// posted that early is moved under the answer once the answer appears.
 func (g *Gateway) postStop(turn *turnContext, srf surface.Surface, stopper surface.Stopper) {
 	st := &turn.stop
 	st.mu.Lock()
@@ -92,15 +87,8 @@ func (g *Gateway) postStop(turn *turnContext, srf surface.Surface, stopper surfa
 		st.mu.Unlock()
 		return
 	}
-	if st.armedAt.IsZero() {
-		st.armedAt = time.Now()
-	}
-	if !g.turnMessagePosted(turn) && time.Since(st.armedAt) < stopControlMaxWait {
-		st.timer = time.AfterFunc(stopControlRetry, func() { g.postStop(turn, srf, stopper) })
-		st.mu.Unlock()
-		return
-	}
 	st.mu.Unlock()
+	above := !g.turnMessagePosted(turn)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	ref, err := stopper.PostStop(ctx, surface.StopControl{
@@ -117,6 +105,9 @@ func (g *Gateway) postStop(turn *turnContext, srf surface.Surface, stopper surfa
 	ended, by := st.ended, st.by
 	if !ended {
 		st.ref = ref
+		// The answer may have appeared while the post was in flight, landing
+		// above the control after all.
+		st.above = above && !g.turnMessagePosted(turn)
 	}
 	st.mu.Unlock()
 	switch {
@@ -127,6 +118,43 @@ func (g *Gateway) postStop(turn *turnContext, srf surface.Surface, stopper surfa
 	case by != nil:
 		_ = srf.Resolve(ctx, ref, stoppingText(by))
 	}
+}
+
+// restackStop moves a control posted above the answer to under it, called when
+// the turn's message first appears. Nothing happens for a control already in
+// place, one not yet posted, or one someone has pressed.
+func (g *Gateway) restackStop(turn *turnContext) {
+	st := &turn.stop
+	st.mu.Lock()
+	if !st.above || st.ended || st.by != nil || st.ref == (surface.Ref{}) {
+		st.mu.Unlock()
+		return
+	}
+	old := st.ref
+	st.above = false
+	st.ref = surface.Ref{}
+	st.mu.Unlock()
+
+	srf, ok := g.surfaceFor(turn.Surface)
+	if !ok {
+		return
+	}
+	stopper, ok := srf.(surface.Stopper)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := stopper.Delete(ctx, old); err != nil {
+		g.log.Warn("stop control delete failed", "turn", turn.TurnID, "err", err)
+		st.mu.Lock()
+		if st.ref == (surface.Ref{}) {
+			st.ref = old // still there: keep tracking it so the turn's end retires it
+		}
+		st.mu.Unlock()
+		return
+	}
+	g.postStop(turn, srf, stopper)
 }
 
 // turnMessagePosted reports whether the turn's streamed message exists yet.

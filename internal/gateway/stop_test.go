@@ -34,9 +34,9 @@ func (f *fakeSurface) stopState() (controls []surface.StopControl, deleted, reso
 }
 
 func quickStopControl(t *testing.T) {
-	oldDelay, oldWait := stopControlDelay, stopControlMaxWait
+	old := stopControlDelay
 	stopControlDelay = 20 * time.Millisecond
-	t.Cleanup(func() { stopControlDelay, stopControlMaxWait = oldDelay, oldWait })
+	t.Cleanup(func() { stopControlDelay = old })
 }
 
 func TestStopButtonCancelsTheTurn(t *testing.T) {
@@ -180,11 +180,11 @@ func TestBangStopWithNothingRunning(t *testing.T) {
 	})
 }
 
-// The control waits for the turn's message so it sits under it, but a turn
-// that stays silent still gets one.
-func TestStopControlWaitsForTheTurnsMessage(t *testing.T) {
+// A turn with no message yet still gets its control on time — a turn that only
+// thinks has none until it ends — and the control moves under the answer once
+// the answer appears.
+func TestEarlyStopControlMovesUnderTheAnswer(t *testing.T) {
 	quickStopControl(t)
-	stopControlMaxWait = 300 * time.Millisecond
 	h := newHarness(t)
 	ws := h.connect(t, "s3cret")
 	readFrame[*protocol.HelloAck](t, ws)
@@ -193,14 +193,31 @@ func TestStopControlWaitsForTheTurnsMessage(t *testing.T) {
 		Surface: "test", Channel: "C1", Thread: "T1",
 		User: surface.User{ID: "U1"}, Text: "think hard", Addressed: true,
 	})
-	readFrame[*protocol.Message](t, ws)
+	msg := readFrame[*protocol.Message](t, ws)
 
-	time.Sleep(150 * time.Millisecond)
-	if cs, _, _ := h.srf.stopState(); len(cs) != 0 {
-		t.Fatal("control posted before the turn had a message to sit under")
-	}
-	eventually(t, "control after the wait", func() bool {
+	eventually(t, "control posted before any message", func() bool {
 		cs, _, _ := h.srf.stopState()
 		return len(cs) == 1
+	})
+
+	send(t, ws, &protocol.ToolStart{ThreadID: msg.ThreadID, TurnID: msg.TurnID, CallID: "c1", Tool: "Read"})
+	eventually(t, "control moved under the answer", func() bool {
+		cs, deleted, _ := h.srf.stopState()
+		return len(cs) == 2 && len(deleted) == 1
+	})
+
+	// It moves once: more output does not shuffle it again.
+	send(t, ws, &protocol.ToolEnd{ThreadID: msg.ThreadID, TurnID: msg.TurnID, CallID: "c1", OK: true})
+	send(t, ws, &protocol.ToolStart{ThreadID: msg.ThreadID, TurnID: msg.TurnID, CallID: "c2", Tool: "Read"})
+	time.Sleep(100 * time.Millisecond)
+	if cs, _, _ := h.srf.stopState(); len(cs) != 2 {
+		t.Fatalf("controls posted = %d, want 2", len(cs))
+	}
+
+	// The moved control is the live one: the turn's end retires it.
+	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: msg.TurnID})
+	eventually(t, "moved control deleted at the end", func() bool {
+		_, deleted, _ := h.srf.stopState()
+		return len(deleted) == 2
 	})
 }
