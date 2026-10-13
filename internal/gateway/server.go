@@ -168,6 +168,23 @@ func (g *Gateway) handshake(ctx context.Context, ws *websocket.Conn, remote stri
 		return nil, err
 	}
 
+	// A different process than last time means the old one is gone with its
+	// turns: no done will ever arrive for them. Fail them now rather than
+	// leaving their threads blocked until the stranded-turn sweep. This runs
+	// before the queue drains, so a queued turn is untouched, and only turns
+	// begun before this connection count. After the ack, so the runner hears
+	// it is registered before any message the freed thread dispatches.
+	if hello.Instance != "" {
+		prev, had := g.instances.Swap(conn.runner, hello.Instance)
+		if had && prev.(string) != hello.Instance {
+			n := g.failTurns(conn.runner, conn.connectedAt, "runner_restarted: runner process restarted mid-turn",
+				fmt.Sprintf(":warning: `%s` restarted mid-turn, so this turn was lost. Completed file changes are saved on the runner; message again to pick the session back up.", conn.runner))
+			if n > 0 {
+				g.log.Warn("runner restarted; failed its in-flight turns", "runner", conn.runner, "count", n)
+			}
+		}
+	}
+
 	_ = g.store.Log(store.Event{
 		Kind:   "runner.connected",
 		Runner: conn.runner,

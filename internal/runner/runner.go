@@ -77,6 +77,9 @@ type Runner struct {
 	conn   *websocket.Conn
 	sendMu sync.Mutex
 
+	// instance is this process's id, sent in every hello; see protocol.Hello.
+	instance string
+
 	sessions sync.Map // thread id -> *threadSession
 	// sessionIDs persists resume points when a state dir is configured.
 	sessionIDs *sessionIndex
@@ -127,7 +130,7 @@ func New(o Options) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{opts: o, log: o.Logger, adapter: a, sessionIDs: idx}, nil
+	return &Runner{opts: o, log: o.Logger, adapter: a, sessionIDs: idx, instance: randomID()}, nil
 }
 
 // DefaultRuntimeRoot prefers tmpfs so nothing lands on persistent disk.
@@ -214,6 +217,7 @@ func (r *Runner) connectOnce(ctx context.Context) error {
 		},
 		Harness:      protocol.HarnessInfo{Adapter: r.adapter.Name()},
 		Capabilities: []string{"files", "images", "permission-prompt-tool", "proxied-mcp"},
+		Instance:     r.instance,
 	}
 	// Tell the gateway what we already have. After a reboot this is empty even
 	// though the gateway may believe it pushed — the runtime root is tmpfs.
