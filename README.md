@@ -132,6 +132,13 @@ the Slack app (the same setting the permission buttons use) and a runner on
 protocol 1.2 or later. An older runner gets no button, and `!stop` explains
 why instead of sending a request it would silently drop.
 
+Slack also draws its own stop button on a thread while the app shows it as
+working. To use that one instead, subscribe the app to the
+`agent_session_stopped` bot event and set `gateway.slack.native_stop: true` (a
+config reload is enough); the gateway then posts no Stop control of its own.
+Until the app is subscribed, Slack shows its button but answers a press with
+"stopping not available for this agent", so leave `native_stop` off until then.
+
 `!status` and `!routes` also flag any routed channel the bot has not been
 invited into. That case is worth calling out because the platform simply never
 delivers those messages, making it indistinguishable from having no route at

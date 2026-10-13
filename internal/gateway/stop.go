@@ -64,6 +64,11 @@ func (g *Gateway) armStop(turn *turnContext) {
 	if !ok {
 		return
 	}
+	// The surface draws its own stop button on a working thread; a second one
+	// would only be clutter.
+	if turn.Surface == "slack" && g.cfg.Load().Gateway.Slack.NativeStop {
+		return
+	}
 	if _, ok := g.canCancel(turn.Runner); !ok {
 		return
 	}
@@ -149,8 +154,13 @@ func (turn *turnContext) stopNote(interrupted bool) string {
 	return fmt.Sprintf("Stopped by <@%s> after %s.", by.ID, time.Since(turn.StartedAt).Round(time.Second))
 }
 
-// OnStop handles a press of a turn's Stop control.
+// OnStop handles a press of a turn's Stop control, or of the surface's own
+// stop button on a working thread.
 func (g *Gateway) OnStop(ctx context.Context, r surface.StopRequest) {
+	if r.TurnID == "" {
+		g.onNativeStop(ctx, r)
+		return
+	}
 	v, ok := g.turns.Load(r.TurnID)
 	if !ok {
 		// Finished, or from a previous gateway process: either way the control
@@ -169,6 +179,46 @@ func (g *Gateway) OnStop(ctx context.Context, r surface.StopRequest) {
 			})
 		}
 	}
+}
+
+// onNativeStop handles the surface's own stop button, which names a thread
+// rather than a turn.
+func (g *Gateway) onNativeStop(ctx context.Context, r surface.StopRequest) {
+	key := threadKey(r.Surface, r.Channel, r.Thread)
+	turn := g.runningTurnIn(key)
+	if turn == nil {
+		// Nothing to stop, but the surface is still showing the thread as
+		// working until told otherwise.
+		g.clearWorking(key)
+		return
+	}
+	if r.StreamStopped {
+		if v, ok := g.streams.Load(turn.TurnID); ok {
+			v.(*stream).SurfaceStopped()
+		}
+	}
+	if msg := g.stopTurn(ctx, turn, r.User); msg != "" {
+		if srf, ok := g.surfaceFor(turn.Surface); ok {
+			_, _ = srf.Post(ctx, surface.Post{
+				Channel: turn.Channel, Thread: turn.Thread,
+				Text: msg, Ephemeral: true, User: r.User.ID,
+			})
+		}
+	}
+}
+
+// runningTurnIn finds the thread's turn in flight, if any.
+func (g *Gateway) runningTurnIn(key string) *turnContext {
+	var found *turnContext
+	g.turns.Range(func(_, value any) bool {
+		turn := value.(*turnContext)
+		if turn.ThreadID == key {
+			found = turn
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // stopTurn asks the runner to stop a turn. It returns a message for the person
@@ -301,15 +351,7 @@ func (g *Gateway) settleStop(ctx context.Context, turn *turnContext, interrupted
 // stopThread is `!stop`: stop the thread's running turn and drop anything
 // parked behind it, the way Esc in a terminal also discards queued input.
 func (g *Gateway) stopThread(ctx context.Context, in surface.Inbound, key string) {
-	var running *turnContext
-	g.turns.Range(func(_, value any) bool {
-		turn := value.(*turnContext)
-		if turn.ThreadID == key {
-			running = turn
-			return false
-		}
-		return true
-	})
+	running := g.runningTurnIn(key)
 
 	dropped := g.dropParked(ctx, key, in.User)
 

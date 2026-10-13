@@ -60,6 +60,24 @@ func New(botToken, appToken string) (*Surface, error) {
 
 func (s *Surface) Name() string { return "slack" }
 
+// agentSessionStopped is Slack's event for a press of its native stop button
+// on a working thread. slack-go does not know it, and an unknown event fails
+// to parse and is dropped, so it is registered here.
+type agentSessionStopped struct {
+	Type      string   `json:"type"`
+	Channel   string   `json:"channel"`
+	ThreadTS  string   `json:"thread_ts"`
+	User      string   `json:"user"`
+	Streaming []string `json:"streaming_message_ts"`
+	EventTS   string   `json:"event_ts"`
+}
+
+const agentSessionStoppedType = "agent_session_stopped"
+
+func init() {
+	slackevents.EventsAPIInnerEventMapping[agentSessionStoppedType] = agentSessionStopped{}
+}
+
 // Start connects and pumps events until ctx is cancelled.
 func (s *Surface) Start(ctx context.Context, h surface.Handler) error {
 	auth, err := s.api.AuthTestContext(ctx)
@@ -108,6 +126,16 @@ func (s *Surface) pump(ctx context.Context, h surface.Handler) {
 
 func (s *Surface) handleEvent(ctx context.Context, h surface.Handler, api slackevents.EventsAPIEvent) {
 	if api.Type != slackevents.CallbackEvent {
+		return
+	}
+	if st, ok := api.InnerEvent.Data.(*agentSessionStopped); ok {
+		h.OnStop(ctx, surface.StopRequest{
+			Surface:       s.Name(),
+			Channel:       st.Channel,
+			Thread:        st.ThreadTS,
+			User:          surface.User{ID: st.User},
+			StreamStopped: len(st.Streaming) > 0,
+		})
 		return
 	}
 	ev, ok := api.InnerEvent.Data.(*slackevents.MessageEvent)

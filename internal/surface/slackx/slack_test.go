@@ -438,3 +438,22 @@ func TestOtherBotsAreMarked(t *testing.T) {
 		}
 	})
 }
+
+// slack-go does not know agent_session_stopped; the surface registers it, so
+// the raw Events API payload must parse into a stop for the thread.
+func TestAgentSessionStoppedBecomesAStop(t *testing.T) {
+	raw := `{"type":"event_callback","team_id":"T1","event":{"type":"agent_session_stopped","channel":"C1","thread_ts":"1700.1","user":"U9","streaming_message_ts":["1700.2"],"event_ts":"1700.3"}}`
+	api, err := slackevents.ParseEvent([]byte(raw), slackevents.OptionNoVerifyToken())
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	h := &recordingHandler{}
+	(&Surface{}).handleEvent(context.Background(), h, api)
+	if len(h.stops) != 1 {
+		t.Fatalf("stops = %d", len(h.stops))
+	}
+	st := h.stops[0]
+	if st.TurnID != "" || st.Channel != "C1" || st.Thread != "1700.1" || st.User.ID != "U9" || !st.StreamStopped {
+		t.Fatalf("stop = %+v", st)
+	}
+}
