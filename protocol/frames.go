@@ -146,6 +146,12 @@ type Hello struct {
 	// attribute. Reporting it here is what lets the gateway push when the two
 	// disagree rather than trusting its own cache.
 	Bundle *BundleRef `json:"bundle,omitempty"`
+	// Instance identifies this runner process, fresh on every start. A
+	// reconnect that brings a different instance means the old process — and
+	// every turn it was running — is gone, which a network blip and a restart
+	// otherwise look identical from the gateway. Optional: an older runner
+	// sends none and gets the grace-period handling.
+	Instance string `json:"instance,omitempty"`
 }
 
 func (*Hello) Type() FrameType      { return TypeHello }

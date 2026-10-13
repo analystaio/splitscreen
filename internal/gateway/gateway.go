@@ -48,6 +48,9 @@ type Gateway struct {
 	streamWarned atomic.Bool
 	prompts      sync.Map // permission request id -> *pendingPrompt
 	turns        sync.Map // turn id -> *turnContext
+	// instances is the process id each runner last connected with; see
+	// protocol.Hello.Instance.
+	instances sync.Map // runner -> string
 
 	bundlesMu sync.Mutex
 	bundles   map[string]bundleState // runner -> last pushed bundle

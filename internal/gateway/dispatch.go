@@ -342,24 +342,37 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 	if c, ok := g.hub.Get(runner); ok && !c.closed.Load() {
 		return
 	}
+	g.failTurns(runner, time.Time{}, "runner_offline: connection lost mid-turn",
+		fmt.Sprintf(":warning: `%s` went offline mid-turn. Completed file changes are saved on the runner; message again to pick the session back up — if it is still down, the message will queue and deliver when it returns.", runner))
+}
+
+// failTurns finalizes a runner's in-flight turns that can no longer finish,
+// telling each thread why. A zero before means every such turn; otherwise only
+// turns started before it. Queued turns are left for the queue to deliver.
+func (g *Gateway) failTurns(runner string, before time.Time, reason, notice string) int {
 	ctx := context.Background()
+	n := 0
 	g.turns.Range(func(key, value any) bool {
 		turn := value.(*turnContext)
 		if turn.Runner != runner || turn.queued.Load() {
 			return true
 		}
-		g.turns.Delete(key)
-		g.log.Warn("failing turn: runner gone past grace",
-			"runner", runner, "turn", turn.TurnID, "thread", turn.ThreadID)
+		if !before.IsZero() && !turn.StartedAt.Before(before) {
+			return true
+		}
+		if _, loaded := g.turns.LoadAndDelete(key); !loaded {
+			return true
+		}
+		n++
+		g.log.Warn("failing turn", "runner", runner, "turn", turn.TurnID, "thread", turn.ThreadID, "reason", reason)
 		if v, loaded := g.streams.Load(turn.TurnID); loaded {
 			v.(*stream).Close(ctx)
 		}
-		_ = g.store.FinishTurn(turn.TurnID, store.TurnError, "runner_offline: connection lost mid-turn",
+		_ = g.store.FinishTurn(turn.TurnID, store.TurnError, reason,
 			time.Since(turn.StartedAt).Milliseconds(), 0)
 		if srf, ok := g.surfaceFor(turn.Surface); ok {
 			_, _ = srf.Post(ctx, surface.Post{
-				Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona,
-				Text: fmt.Sprintf(":warning: `%s` went offline mid-turn. Completed file changes are saved on the runner; message again to pick the session back up — if it is still down, the message will queue and deliver when it returns.", runner),
+				Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona, Text: notice,
 			})
 		}
 		g.clearWorking(turn.ThreadID)
@@ -368,6 +381,7 @@ func (g *Gateway) reconcileTurns(runner string, grace time.Duration) {
 		g.endThreadTurn(ctx, turn.ThreadID)
 		return true
 	})
+	return n
 }
 
 // strandedTurnTimeout bounds how long a turn may go with zero upward frames
