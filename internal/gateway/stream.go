@@ -58,6 +58,10 @@ type stream struct {
 
 	// footer goes under the finished message; see surface.StreamUpdate.
 	footer string
+	// surfaceStopped means the surface ended the native stream itself (a press
+	// of its stop button). Nothing more can be appended, and falling back to a
+	// fresh post would repeat the answer, so later output is dropped.
+	surfaceStopped bool
 
 	stop chan struct{}
 	done chan struct{}
@@ -254,6 +258,13 @@ func (s *stream) SetFooter(text string) {
 	s.mu.Unlock()
 }
 
+// SurfaceStopped records that the surface has ended the native stream.
+func (s *stream) SurfaceStopped() {
+	s.mu.Lock()
+	s.surfaceStopped = true
+	s.mu.Unlock()
+}
+
 // Posted reports whether the turn's message exists on the surface yet, so
 // controls that belong under it are not posted above it.
 func (s *stream) Posted() bool {
@@ -340,7 +351,7 @@ func (s *stream) flushWith(ctx context.Context, final bool) {
 		s.body.WriteString(s.pending.String())
 		s.pending.Reset()
 	}
-	native, fellBack := s.native, s.fellBack
+	native, fellBack, surfaceStopped := s.native, s.fellBack, s.surfaceStopped
 	// Whether there is anything worth sending: unsent prose (body past sent) or
 	// any steps. A turn that produced neither has nothing to show.
 	nothingToSend := s.body.Len() <= s.sent && len(s.order) == 0
@@ -357,6 +368,11 @@ func (s *stream) flushWith(ctx context.Context, final bool) {
 
 	srf, ok := s.gw.surfaceFor(s.turn.Surface)
 	if !ok {
+		return
+	}
+
+	if surfaceStopped && native != nil {
+		s.finishStopped(ctx, srf, native, final)
 		return
 	}
 
@@ -454,6 +470,29 @@ func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) 
 	s.commit()
 	s.mu.Unlock()
 	return true
+}
+
+// finishStopped closes out a stream the surface already ended. The close is
+// still attempted — it carries the footer, and a surface that tolerates it
+// keeps the message whole — but a refusal is expected and does not fall back to
+// a fresh post, which would repeat the answer. The footer then goes alone.
+func (s *stream) finishStopped(ctx context.Context, srf surface.Surface, native surface.Stream, final bool) {
+	if !final {
+		return
+	}
+	s.mu.Lock()
+	u := s.take()
+	u.Footer = s.footer
+	footer := s.footer
+	s.commit()
+	s.mu.Unlock()
+	if err := native.Close(ctx, u); err == nil || footer == "" {
+		return
+	}
+	_, _ = srf.Post(ctx, surface.Post{
+		Channel: s.turn.Channel, Thread: s.turn.Thread, Persona: s.turn.Persona,
+		Text: "_" + footer + "_",
+	})
 }
 
 func (s *stream) pushEdit(ctx context.Context, srf surface.Surface, final bool) {

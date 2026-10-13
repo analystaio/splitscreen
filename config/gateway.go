@@ -66,6 +66,12 @@ type Slack struct {
 	// Secret names for the tokens. Values never appear in this file.
 	BotTokenSecret string `yaml:"bot_token_secret"`
 	AppTokenSecret string `yaml:"app_token_secret"`
+	// NativeStop uses Slack's own stop button on a working thread instead of
+	// posting a Stop control. It needs the app subscribed to the
+	// agent_session_stopped event; without that, Slack shows the button but
+	// answers a press with "stopping not available for this agent". Read on
+	// every turn, so a config reload switches it.
+	NativeStop bool `yaml:"native_stop"`
 }
 
 const (

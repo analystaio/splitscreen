@@ -80,8 +80,15 @@ type Decision struct {
 // turn's stop control.
 type StopRequest struct {
 	Surface string
+	// TurnID names the turn when the control carried it. A surface's own stop
+	// (Slack's native one) names only the thread, in Channel and Thread.
 	TurnID  string
-	User    User
+	Channel string
+	Thread  string
+	// StreamStopped reports that the surface already ended the turn's
+	// streaming message itself, so the gateway must not write to it again.
+	StreamStopped bool
+	User          User
 	// Ref is the control that was pressed, so it can be updated in place.
 	Ref Ref
 }
