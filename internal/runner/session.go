@@ -163,7 +163,7 @@ func (r *Runner) sessionFor(ctx context.Context, threadID string) (*threadSessio
 		r.log.Warn("starting without plugins", "thread", threadID, "err", err)
 	}
 
-	env := r.buildEnv(configDir)
+	env := r.buildEnv(configDir, threadID)
 	cfg := harness.SessionConfig{
 		PluginDirs:     pluginDirs,
 		LooseMCP:       r.bundle.LooseMCP(),
@@ -196,7 +196,10 @@ func (r *Runner) sessionFor(ctx context.Context, threadID string) (*threadSessio
 // environment does: a denylist misses every variable introduced after it was
 // written, which is exactly how a credential stopped reaching the harness in
 // the predecessor to this system.
-func (r *Runner) buildEnv(configDir string) []string {
+//
+// SPLITSCREEN_THREAD names the thread this harness serves, so helpers the agent
+// runs (splitscreen send-file) deliver into it without being told the id.
+func (r *Runner) buildEnv(configDir, threadID string) []string {
 	allow := []string{
 		"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TZ",
 		"TERM", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR",
@@ -215,6 +218,9 @@ func (r *Runner) buildEnv(configDir string) []string {
 	env = append(env, "CLAUDE_CONFIG_DIR="+configDir)
 	env = append(env, "SPLITSCREEN_RUNNER="+r.opts.Name)
 	env = append(env, "SPLITSCREEN_SOCKET="+SocketPath(r.opts.RuntimeRoot, r.opts.Name))
+	if threadID != "" {
+		env = append(env, "SPLITSCREEN_THREAD="+threadID)
+	}
 
 	// The harness credential is the one secret that must exist on the runner,
 	// because the agent process authenticates from here.

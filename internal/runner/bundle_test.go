@@ -207,7 +207,7 @@ func TestBuildEnvIsAnAllowlist(t *testing.T) {
 	r.bundle.secrets = map[string]string{"ANTHROPIC_API_KEY": "sk-test"}
 	r.bundle.mu.Unlock()
 
-	env := r.buildEnv("/run/splitscreen/alpha/config")
+	env := r.buildEnv("/run/splitscreen/alpha/config", "slack:C1:1.2")
 	joined := strings.Join(env, "\n")
 
 	if strings.Contains(joined, "leaked") {
@@ -221,6 +221,9 @@ func TestBuildEnvIsAnAllowlist(t *testing.T) {
 	}
 	if !strings.Contains(joined, "CLAUDE_CONFIG_DIR=/run/splitscreen/alpha/config") {
 		t.Error("the config dir should be set")
+	}
+	if !strings.Contains(joined, "SPLITSCREEN_THREAD=slack:C1:1.2") {
+		t.Error("the thread id should be set, so send-file knows where to deliver")
 	}
 }
 

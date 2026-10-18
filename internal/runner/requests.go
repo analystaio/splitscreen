@@ -142,6 +142,14 @@ func (r *Runner) sendFile(ctx context.Context, threadID, path, comment string) e
 	if path == "" {
 		return errors.New("runner: a path is required")
 	}
+	// Without a thread and a running turn the gateway has nowhere to deliver
+	// the file and drops it; fail here, where the caller sees it.
+	if threadID == "" {
+		return errors.New("runner: no thread to deliver into (pass --thread or set SPLITSCREEN_THREAD)")
+	}
+	if r.turnForThread(threadID) == "" {
+		return fmt.Errorf("runner: no running turn in thread %s to deliver into", threadID)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
