@@ -318,7 +318,9 @@ suppresses steps.
 implementing `surface.Statuser` shows a transient line in the thread — on Slack,
 `assistant.threads.setStatus`, rendered "<app> is working…" under the thread, which needs
 only `chat:write` and works in ordinary channel threads. It covers the stretch the plan
-card cannot: from dispatch until the first output, and the quiet gaps after. The
+card cannot: from dispatch until the card opens. Once a native stream opens, the card's
+"Working…" title is the indicator and the line is cleared rather than shown twice; on the
+post-and-edit path it stays for the whole turn. The
 gateway sets it when a turn is dispatched, as the runner's persona; shows "is starting
 up…" while a message waits on a machine being woken, and "is waiting for a free slot…"
 while it waits on the concurrency cap; and clears it on every way a turn can end — done,

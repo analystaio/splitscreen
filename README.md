@@ -353,7 +353,8 @@ While a runner has a turn in flight, Slack shows "<app> is working…" in the
 thread (`assistant.threads.setStatus`, which needs only `chat:write`). A message
 waiting on a sleeping machine shows "is starting up…", one waiting on the
 concurrency cap "is waiting for a free slot…". The gateway re-sets it through
-Slack's two-minute expiry and clears it when the turn ends. Set the text with
+Slack's two-minute expiry and clears it when the turn ends, or as soon as the
+streamed plan card appears, since the card shows the same thing. Set the text with
 `working_status: "is thinking…"` on a runner; `working_status: ""` turns it off.
 A channel where Slack refuses it is logged once and then left alone.
 

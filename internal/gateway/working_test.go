@@ -134,3 +134,40 @@ func TestWorkingIndicatorRefresh(t *testing.T) {
 		t.Error("an expired waiting indicator was kept")
 	}
 }
+
+// Once a native stream opens, its plan card shows the turn is working, so the
+// indicator is cleared and not re-set for the rest of the turn.
+func TestWorkingIndicatorClearedWhenStreamOpens(t *testing.T) {
+	h, srf := newStreamingHarness(t)
+	ws := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, ws)
+
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T1",
+		User: surface.User{ID: "U1"}, Addressed: true, Text: "hello",
+	})
+	msg := readFrame[*protocol.Message](t, ws)
+	eventually(t, "status set", func() bool {
+		return strings.Join(srf.statusTexts(), "|") == "C1:is working…"
+	})
+
+	send(t, ws, &protocol.ToolStart{
+		ThreadID: msg.ThreadID, TurnID: msg.TurnID,
+		CallID: "c1", Tool: "Bash", Summary: "df -h /",
+	})
+	eventually(t, "status cleared on stream open", func() bool {
+		return strings.Join(srf.statusTexts(), "|") == "C1:is working…|C1:"
+	})
+	h.gw.working.mu.Lock()
+	_, tracked := h.gw.working.entries[msg.ThreadID]
+	h.gw.working.mu.Unlock()
+	if tracked {
+		t.Error("indicator still tracked after the stream opened; it would be re-set")
+	}
+
+	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: msg.TurnID})
+	time.Sleep(50 * time.Millisecond)
+	if got := strings.Join(srf.statusTexts(), "|"); got != "C1:is working…|C1:" {
+		t.Errorf("statuses = %s", got)
+	}
+}

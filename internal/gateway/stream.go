@@ -425,6 +425,9 @@ func (s *stream) open(ctx context.Context, srf surface.Surface) surface.Stream {
 	s.ref = st.Ref()
 	s.posted = true
 	s.mu.Unlock()
+	// The plan card is the progress indicator from here on; the working line
+	// under the thread would only repeat it.
+	s.gw.clearWorking(s.turn.ThreadID)
 	go s.gw.restackStop(s.turn)
 	return st
 }
