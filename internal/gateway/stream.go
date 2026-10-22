@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +51,9 @@ type stream struct {
 	// unsupported stream every tick would spend the turn's rate budget on
 	// errors.
 	fellBack bool
+	// rotations counts streams the surface expired mid-turn, each replaced by a
+	// fresh one; see maxStreamRotations.
+	rotations int
 
 	posted bool
 	ref    surface.Ref
@@ -66,6 +70,12 @@ type stream struct {
 	stop chan struct{}
 	done chan struct{}
 }
+
+// maxStreamRotations bounds how many fresh streams one turn may open after
+// expiries. Slack's run about ten minutes, so this is a few hours of turn; past
+// it, or if a surface reports expiry on every stream, the turn takes the
+// post-and-edit path rather than opening messages forever.
+const maxStreamRotations = 20
 
 func (g *Gateway) streamFor(turn *turnContext) *stream {
 	if v, ok := g.streams.Load(turn.TurnID); ok {
@@ -376,18 +386,25 @@ func (s *stream) flushWith(ctx context.Context, final bool) {
 		return
 	}
 
-	if !fellBack {
+	for !fellBack {
 		if native == nil {
 			native = s.open(ctx, srf)
 		}
-		if native != nil {
-			if s.pushNative(ctx, native, final) {
-				return
-			}
+		if native == nil {
+			break
+		}
+		sent, rotate := s.pushNative(ctx, native, final)
+		if sent {
+			return
+		}
+		if !rotate {
 			// The stream broke mid-turn. Fall through rather than return: on a
 			// final flush there is no later tick to recover on, and the answer
 			// would be lost.
+			break
 		}
+		// The stream expired: the same update goes to a fresh one.
+		native = nil
 	}
 	s.pushEdit(ctx, srf, final)
 }
@@ -432,9 +449,10 @@ func (s *stream) open(ctx context.Context, srf surface.Surface) surface.Stream {
 	return st
 }
 
-// pushNative sends one increment. It reports false when the stream broke and
-// the caller should take the fallback path instead.
-func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) bool {
+// pushNative sends one increment. It reports sent=false when the stream broke;
+// rotate then says whether the caller should resend to a fresh stream (the
+// surface expired this one) or take the fallback path.
+func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) (sent, rotate bool) {
 	s.mu.Lock()
 	u := s.take()
 	if final {
@@ -444,7 +462,7 @@ func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) 
 	s.mu.Unlock()
 
 	if !final && u.Text == "" && len(u.Steps) == 0 {
-		return true
+		return true, false
 	}
 
 	var err error
@@ -452,6 +470,31 @@ func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) 
 		err = st.Close(ctx, u)
 	} else {
 		err = st.Append(ctx, u)
+	}
+	if err != nil && errors.Is(err, surface.ErrStreamExpired) && final &&
+		u.Text == "" && len(u.Steps) == 0 && u.Footer == "" {
+		// A close with nothing to say: a fresh stream would be an empty bubble.
+		return true, false
+	}
+	if err != nil && errors.Is(err, surface.ErrStreamExpired) && s.rotations < maxStreamRotations {
+		s.gw.log.Info("stream expired; continuing in a new one", "turn", s.turn.TurnID,
+			"final", final, "err", err)
+		s.mu.Lock()
+		s.rotations++
+		// Nothing is committed: the update goes out again on the next stream.
+		// Running steps go with it, since only the new message can finish them.
+		// Prose already sent stays where it is, so sent is kept.
+		for _, id := range s.order {
+			if s.steps[id].Status == surface.StepRunning {
+				s.changed[id] = true
+			}
+		}
+		s.dirty = true
+		s.native = nil
+		s.posted = false
+		s.ref = surface.Ref{}
+		s.mu.Unlock()
+		return false, true
 	}
 	if err != nil {
 		s.gw.log.Warn("stream append failed", "turn", s.turn.TurnID, "final", final, "err", err)
@@ -468,12 +511,12 @@ func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) 
 		s.ref = surface.Ref{}
 		s.sent = 0
 		s.mu.Unlock()
-		return false
+		return false, false
 	}
 	s.mu.Lock()
 	s.commit()
 	s.mu.Unlock()
-	return true
+	return true, false
 }
 
 // finishStopped closes out a stream the surface already ended. The close is

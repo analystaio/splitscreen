@@ -32,6 +32,14 @@ const maxPlanTasks = 50
 // overflowID is the shared task id every step past the cap collapses into.
 const overflowID = "overflow"
 
+// streamRotateAfter is how long one streaming message is kept open. Slack ends
+// a stream on its own about ten minutes after it starts — undocumented, but
+// every long turn on 2026-10-21 got message_not_in_streaming_state 10m35s–10m48s
+// in — and left the card stuck on "Working…" while the rest of the turn went
+// out as plain text. Retiring the card first lets it close with a proper title,
+// and the turn continues in a fresh one.
+const streamRotateAfter = 8 * time.Minute
+
 // errStreamUnsupported is returned once the workspace has told us streaming is
 // not available to this app, so the gateway stops asking.
 var errStreamUnsupported = errors.New("slack: streaming not available for this app")
@@ -45,6 +53,15 @@ var streamDenied = []string{
 	"method_not_supported_for_channel_type",
 	"invalid_arguments",
 	"unknown_method",
+}
+
+// asExpired marks Slack's "this stream has ended" so the gateway rotates to a
+// fresh stream rather than abandoning streaming for the turn.
+func asExpired(err error) error {
+	if strings.Contains(err.Error(), "message_not_in_streaming_state") {
+		return fmt.Errorf("%w: %w", surface.ErrStreamExpired, err)
+	}
+	return err
 }
 
 func deniedPermanently(err error) bool {
@@ -100,6 +117,7 @@ func (s *Surface) OpenStream(ctx context.Context, p surface.Post) (surface.Strea
 		persona:  p.Persona,
 		opened:   time.Now(),
 		slots:    map[string]bool{},
+		carded:   map[string]surface.Step{},
 		status:   map[string]surface.StepStatus{},
 		overflow: map[string]surface.StepStatus{},
 	}, nil
@@ -116,6 +134,9 @@ type stream struct {
 	// slots holds the step ids that own a task card of their own; once
 	// maxPlanTasks-1 are taken, new ids collapse into the overflow card.
 	slots map[string]bool
+	// carded is the last state of each step with a card of its own, so a
+	// retiring stream can settle the ones still running.
+	carded map[string]surface.Step
 	// status is the last status seen per step id, overflow included, for the
 	// closing plan title's counts.
 	status map[string]surface.StepStatus
@@ -134,6 +155,13 @@ func (st *stream) Append(ctx context.Context, u surface.StreamUpdate) error {
 	if st.closed {
 		return errors.New("slack: stream already closed")
 	}
+	if time.Since(st.opened) >= streamRotateAfter {
+		// Before chunksLocked: the update belongs to the next stream, so this
+		// one's counts must not include it.
+		st.closed = true
+		st.retireLocked(ctx)
+		return fmt.Errorf("slack: retired after %s: %w", streamRotateAfter, surface.ErrStreamExpired)
+	}
 	chunks := st.chunksLocked(u)
 	if len(chunks) == 0 {
 		return nil
@@ -141,9 +169,57 @@ func (st *stream) Append(ctx context.Context, u surface.StreamUpdate) error {
 	_, _, err := st.srf.api.AppendStreamContext(ctx, st.ref.Channel, st.ref.ID,
 		slack.MsgOptionChunks(chunks...))
 	if err != nil {
-		return fmt.Errorf("slack: append stream: %w", err)
+		return fmt.Errorf("slack: append stream: %w", asExpired(err))
 	}
 	return nil
+}
+
+// retireLocked closes a stream the turn has outgrown. Steps still running are
+// settled — a closed message cannot update them, and a spinner left behind
+// would spin forever — with a note that they carry on in the next message,
+// where the gateway resends them. Best effort: if Slack has already ended the
+// stream there is nothing left to tidy. Called under the lock.
+func (st *stream) retireLocked(ctx context.Context) {
+	var chunks []slack.StreamChunk
+	for id, step := range st.carded {
+		if step.Status != surface.StepRunning {
+			continue
+		}
+		chunk := slack.NewTaskUpdateChunk(id, truncateTitle(step.Title))
+		chunk.Status = slack.TaskCardStatusComplete
+		chunk.Details = truncate(joinDetail(step.Detail, "continued below"), 2000)
+		chunks = append(chunks, chunk)
+	}
+	var overflowRunning, overflowFailed bool
+	for _, status := range st.overflow {
+		overflowRunning = overflowRunning || status == surface.StepRunning
+		overflowFailed = overflowFailed || status == surface.StepFailed
+	}
+	if overflowRunning {
+		chunk := slack.NewTaskUpdateChunk(overflowID,
+			fmt.Sprintf("…and %d more steps", len(st.overflow)))
+		chunk.Status = slack.TaskCardStatusComplete
+		if overflowFailed {
+			chunk.Status = slack.TaskCardStatusError
+		}
+		chunk.Details = "continued below"
+		chunks = append(chunks, chunk)
+	}
+	if title := st.finalTitleLocked(); title != "" {
+		chunks = append(chunks, slack.NewPlanUpdateChunk(title+" · continued below"))
+	}
+	if len(chunks) == 0 {
+		chunks = append(chunks, slack.NewMarkdownTextChunk("_continued below_"))
+	}
+	_, _, _ = st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID,
+		slack.MsgOptionChunks(chunks...))
+}
+
+func joinDetail(detail, note string) string {
+	if detail == "" {
+		return note
+	}
+	return detail + "  ·  " + note
 }
 
 func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
@@ -181,7 +257,7 @@ func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
 	}
 	fin = append(fin, footer...)
 	_, _, _ = st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID, fin...)
-	return fmt.Errorf("slack: stop stream: %w", err)
+	return fmt.Errorf("slack: stop stream: %w", asExpired(err))
 }
 
 // chunksLocked converts one update into the streaming protocol's chunks,
@@ -217,6 +293,7 @@ func (st *stream) taskChunkLocked(step surface.Step) slack.TaskUpdateChunk {
 		st.slots[step.ID] = true
 	}
 	if st.slots[step.ID] {
+		st.carded[step.ID] = step
 		chunk := slack.NewTaskUpdateChunk(step.ID, truncateTitle(step.Title))
 		chunk.Status = taskStatus(step.Status)
 		chunk.Details = detailFor(step)

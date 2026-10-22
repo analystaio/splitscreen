@@ -1,6 +1,7 @@
 package slackx
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ func newPlanStream() *stream {
 	return &stream{
 		opened:   time.Now(),
 		slots:    map[string]bool{},
+		carded:   map[string]surface.Step{},
 		status:   map[string]surface.StepStatus{},
 		overflow: map[string]surface.StepStatus{},
 	}
@@ -151,5 +153,17 @@ func TestFooterIsAContextBlockOnlyWhenSet(t *testing.T) {
 	}
 	if len(footerBlocks("Stopped by <@U1> after 13s.")) != 1 {
 		t.Fatal("a footer did not become one block option")
+	}
+}
+
+// Slack's own "stream has ended" error is an expiry the gateway rotates on;
+// anything else stays a plain failure that falls back.
+func TestNotInStreamingStateIsExpiry(t *testing.T) {
+	expired := asExpired(errors.New("message_not_in_streaming_state"))
+	if !errors.Is(expired, surface.ErrStreamExpired) {
+		t.Fatalf("not marked as expiry: %v", expired)
+	}
+	if errors.Is(asExpired(errors.New("msg_too_long")), surface.ErrStreamExpired) {
+		t.Fatal("msg_too_long marked as expiry")
 	}
 }
