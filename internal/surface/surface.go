@@ -161,12 +161,19 @@ type StreamUpdate struct {
 //
 // Append is called on the flush interval and Close exactly once. A Stream that
 // fails mid-turn is not resumable — the gateway falls back to post-and-edit for
-// the remainder rather than dropping output.
+// the remainder rather than dropping output. The exception is ErrStreamExpired:
+// the turn carries on in a fresh stream instead.
 type Stream interface {
 	Append(ctx context.Context, u StreamUpdate) error
 	Close(ctx context.Context, u StreamUpdate) error
 	Ref() Ref
 }
+
+// ErrStreamExpired wraps an Append or Close the surface refused because the
+// stream outlived the surface's limit on how long one may stay open. The update
+// was not delivered; the gateway resends it to a fresh stream, so a long turn
+// becomes a run of progress messages rather than dropping to post-and-edit.
+var ErrStreamExpired = errors.New("stream expired")
 
 // Streamer is implemented by surfaces with a native progressive-message API.
 //

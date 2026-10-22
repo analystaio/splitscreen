@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -343,4 +344,61 @@ func contains(hay []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+// Slack ends a stream about ten minutes in. That is not a broken stream: the
+// turn carries on in a fresh one, a step still running moves with it, and
+// nothing drops to post-and-edit — which is what used to re-post the turn as a
+// wall of plain-text tool lines under a card stuck on "Working…".
+func TestExpiredStreamContinuesInAFreshOne(t *testing.T) {
+	h, srf := newStreamingHarness(t)
+	srf.sendErr = fmt.Errorf("slack: append stream: %w", surface.ErrStreamExpired)
+
+	ws := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, ws)
+
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T1",
+		User: surface.User{ID: "U1"}, Addressed: true, Text: "a long one",
+	})
+	msg := readFrame[*protocol.Message](t, ws)
+
+	send(t, ws, &protocol.ToolStart{
+		ThreadID: msg.ThreadID, TurnID: msg.TurnID,
+		CallID: "c1", Tool: "Bash", Summary: "sleep 600",
+	})
+	eventually(t, "running step resent to the fresh stream", func() bool {
+		return contains(srf.steps(), "c1:running")
+	})
+	send(t, ws, &protocol.ToolEnd{
+		ThreadID: msg.ThreadID, TurnID: msg.TurnID,
+		CallID: "c1", OK: true, DurationMS: 600000,
+	})
+	send(t, ws, &protocol.TextDelta{ThreadID: msg.ThreadID, TurnID: msg.TurnID, Text: "done."})
+	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: msg.TurnID})
+
+	eventually(t, "stream closed", func() bool {
+		srf.smu.Lock()
+		defer srf.smu.Unlock()
+		return len(srf.closes) == 1
+	})
+
+	srf.smu.Lock()
+	opened := srf.opened
+	srf.smu.Unlock()
+	if opened != 2 {
+		t.Fatalf("expected the expired stream to be replaced once, got %d streams", opened)
+	}
+	if got := srf.steps(); !contains(got, "c1:done") {
+		t.Fatalf("step never finished in the fresh stream: %v", got)
+	}
+	if text := srf.streamedText(); text != "done." {
+		t.Fatalf("answer not streamed, got %q", text)
+	}
+	srf.mu.Lock()
+	defer srf.mu.Unlock()
+	if len(srf.posts) != 0 || len(srf.updates) != 0 {
+		t.Fatalf("expiry fell back to post-and-edit: %d posts, %d edits",
+			len(srf.posts), len(srf.updates))
+	}
 }
