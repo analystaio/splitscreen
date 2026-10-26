@@ -241,7 +241,7 @@ registered instance. Configured-but-never-connected runners are surfaced promine
 typo'd runner name should read as a red row, not as "the bot is ignoring me."
 
 **Editing it.** Routes and runners are edited through the CLI (`route add|remove`,
-`runner add|remove|list`, `policy allow|deny`), which edits the YAML node tree so
+`runner add|set|remove|list`, `policy allow|deny`), which edits the YAML node tree so
 comments survive, validates the whole result before writing, and serializes concurrent
 edits with an `flock` beside the file. That last part exists for control planes that
 create and destroy short-lived runners — one per task machine — and may register two at
@@ -254,6 +254,9 @@ kept for the purpose and routed nowhere) and overrides scalar fields by dotted p
 is the same kind of thing, so a template's `wake` block is copied without its
 `ec2_instance`, and the copy's comes from `--set wake.ec2_instance` or, failing that, from
 its `host` when that is an instance id — never from the template.
+`runner set <name>` applies the same overrides to an existing runner in place, so a
+setting (say, which harness credential it runs with) can change without a remove and
+re-add, which would drop its routes. It touches only the named fields.
 `runner remove` drops the runner and every route to it in one edit — a route to a missing
 runner is invalid, so neither can go first — and deletes its secrets-directory file. On
 reload the gateway closes a removed runner's connection, refuses its token from then on

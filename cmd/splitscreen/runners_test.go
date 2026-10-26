@@ -317,3 +317,102 @@ func TestRunnerAddWakesItsOwnHost(t *testing.T) {
 		t.Errorf("wake instance = %q", got)
 	}
 }
+
+func TestRunnerSetChangesFieldsAndKeepsTheRest(t *testing.T) {
+	path, _ := writeTemplateConfig(t)
+	if err := runCmd(t, "runner", "add", "box-foo", "--template", "box-template",
+		"--set", "host=i-0123456789abcdef0", "-c", path); err != nil {
+		t.Fatalf("runner add: %v", err)
+	}
+	if err := runCmd(t, "route", "add", "C222", "box-foo", "-c", path); err != nil {
+		t.Fatalf("route add: %v", err)
+	}
+
+	err := runCmd(t, "runner", "set", "box-foo",
+		"--set", "harness_secret=claude-token-b",
+		"--set", "display.name=Box foo",
+		"--set", "max_concurrent=2",
+		"-c", path)
+	if err != nil {
+		t.Fatalf("runner set: %v", err)
+	}
+
+	cfg := loadConfig(t, path)
+	r := cfg.Runners["box-foo"]
+	if r.HarnessSecret != "claude-token-b" || r.Display.Name != "Box foo" || r.MaxConcurrent != 2 {
+		t.Errorf("fields not set: %+v", r)
+	}
+	if r.Host != "i-0123456789abcdef0" || !r.Wakeable() || r.Wake.EC2Instance != "i-0123456789abcdef0" ||
+		r.Display.Icon != ":package:" || r.EffectiveTokenSecret("box-foo") != "runner-box-foo" {
+		t.Errorf("untouched fields changed: %+v", r)
+	}
+	routed := false
+	for _, rt := range cfg.Routes {
+		if rt.Channel == "C222" && rt.Runner == "box-foo" {
+			routed = true
+		}
+	}
+	if !routed {
+		t.Error("the runner's route was lost")
+	}
+	if _, ok := cfg.Runners["box-template"]; !ok || cfg.Runners["box-template"].HarnessSecret != "" {
+		t.Errorf("the template changed: %+v", cfg.Runners["box-template"])
+	}
+	body, _ := os.ReadFile(path)
+	if !strings.Contains(string(body), "Boxes are copies of box-template") ||
+		!strings.Contains(string(body), "Explains the template") {
+		t.Errorf("comments lost:\n%s", body)
+	}
+
+	// Setting again replaces the value in place rather than adding a key.
+	if err := runCmd(t, "runner", "set", "box-foo", "--set", "harness_secret=claude-token-a", "-c", path); err != nil {
+		t.Fatalf("second runner set: %v", err)
+	}
+	if got := loadConfig(t, path).Runners["box-foo"].HarnessSecret; got != "claude-token-a" {
+		t.Errorf("harness_secret = %q, want claude-token-a", got)
+	}
+	body, _ = os.ReadFile(path)
+	if n := strings.Count(string(body), "harness_secret:"); n != 1 {
+		t.Errorf("harness_secret appears %d times, want 1:\n%s", n, body)
+	}
+}
+
+func TestRunnerSetKeepsAFieldsComment(t *testing.T) {
+	path, _ := writeTemplateConfig(t)
+	body, _ := os.ReadFile(path)
+	body = []byte(strings.Replace(string(body), "    idle: 45m", "    idle: 45m # reaped, not stopped", 1))
+	if err := os.WriteFile(path, body, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCmd(t, "runner", "set", "box-template", "--set", "idle=1h", "-c", path); err != nil {
+		t.Fatalf("runner set: %v", err)
+	}
+	body, _ = os.ReadFile(path)
+	if !strings.Contains(string(body), "idle: 1h # reaped, not stopped") {
+		t.Errorf("line comment lost:\n%s", body)
+	}
+}
+
+func TestRunnerSetRefusesAndLeavesTheFileAlone(t *testing.T) {
+	path, _ := writeTemplateConfig(t)
+	before, _ := os.ReadFile(path)
+
+	cases := [][]string{
+		{"runner", "set", "nope", "--set", "idle=1h"},               // no such runner
+		{"runner", "set", "staging"},                                // nothing to change
+		{"runner", "set", "staging", "--set", "cwd=relative"},       // fails validation
+		{"runner", "set", "staging", "--set", "policy.deny=x"},      // a list field given a scalar
+		{"runner", "set", "box-template", "--set", "policy.deny=x"}, // not a scalar field
+		{"runner", "set", "staging", "--set", "nonsense_key=1"},     // unknown key
+		{"runner", "set", "staging", "--set", "Idle=1h"},            // bad key shape
+	}
+	for _, args := range cases {
+		if err := runCmd(t, append(args, "-c", path)...); err == nil {
+			t.Errorf("%v: expected an error", args)
+		}
+		after, _ := os.ReadFile(path)
+		if string(after) != string(before) {
+			t.Fatalf("%v changed the file despite failing:\n%s", args, after)
+		}
+	}
+}
