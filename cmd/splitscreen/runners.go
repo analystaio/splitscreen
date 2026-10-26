@@ -29,7 +29,7 @@ import (
 // itself: the daemon takes only flags, so the subcommand names never collide
 // with anything it accepts.
 func runnerManageCmds() []*cobra.Command {
-	return []*cobra.Command{runnerListCmd(), runnerAddCmd(), runnerRemoveCmd()}
+	return []*cobra.Command{runnerListCmd(), runnerAddCmd(), runnerSetCmd(), runnerRemoveCmd()}
 }
 
 // identityKeys are never copied from a template. Each names something that must
@@ -249,6 +249,96 @@ Fails if the name is taken. The gateway is not signalled; reload it when ready.`
 	return cmd
 }
 
+func runnerSetCmd() *cobra.Command {
+	var cfgPath string
+	var sets []string
+
+	cmd := &cobra.Command{
+		Use:   "set <name> --set key=value [--set key=value ...]",
+		Short: "Change scalar fields of an existing runner",
+		Long: `Applies --set overrides to a runner already in the config, and validates the
+whole result before writing. The counterpart of add for a runner that exists:
+change its bundle, harness secret, idle timeout or display name without
+removing it, which would also drop its routes.
+
+--set works as it does for add (a dotted path to a scalar field, repeatable;
+missing sections are created; lists cannot be set). Nothing else about the
+runner changes, including its comments; in particular a wake target is not
+re-derived from a new host, so set wake.ec2_instance too when moving a runner
+to another machine.
+
+The gateway is not signalled; reload it when ready.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			name := args[0]
+			if len(sets) == 0 {
+				return errors.New("nothing to change: pass at least one --set key=value")
+			}
+			overrides, err := parseSets(sets)
+			if err != nil {
+				return err
+			}
+
+			unlock, err := lockConfig(cfgPath)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return fmt.Errorf("the existing config is not valid; fix it before changing a runner:\n%w", err)
+			}
+			if _, ok := cfg.Runners[name]; !ok {
+				return fmt.Errorf("no runner named %q is configured", name)
+			}
+
+			var changes []string
+			updated, err := editDoc(cfgPath, func(root *yaml.Node) error {
+				runners := mappingValue(root, "runners")
+				if runners == nil || runners.Kind != yaml.MappingNode {
+					return errors.New("config: no runners section")
+				}
+				block := mappingValue(runners, name)
+				if block == nil || block.Kind != yaml.MappingNode {
+					return fmt.Errorf("config: runner %q is not a mapping in the file", name)
+				}
+				for _, o := range overrides {
+					key := strings.Join(o.path, ".")
+					before := "(unset)"
+					if cur := pathValue(block, o.path); cur != nil && cur.Kind == yaml.ScalarNode {
+						before = cur.Value
+					}
+					if err := setPath(block, o.path, o.value); err != nil {
+						return fmt.Errorf("--set %s: %w", key, err)
+					}
+					changes = append(changes, fmt.Sprintf("%s: %s -> %s", key, before, o.value))
+				}
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+			if _, err := config.Parse(updated); err != nil {
+				return fmt.Errorf("the edit would produce an invalid config; nothing was written:\n%w", err)
+			}
+			if err := writeConfig(cfgPath, updated); err != nil {
+				return err
+			}
+
+			fmt.Printf("Updated runner %s in %s\n", name, cfgPath)
+			for _, c := range changes {
+				fmt.Printf("    %s\n", c)
+			}
+			fmt.Printf("\nApply it: systemctl reload splitscreen-gateway\n")
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&cfgPath, "config", "c", defaultConfigPath, "path to the configuration file")
+	cmd.Flags().StringArrayVar(&sets, "set", nil, "set a scalar field, e.g. bundle=box (repeatable)")
+	return cmd
+}
+
 func runnerRemoveCmd() *cobra.Command {
 	var cfgPath string
 	var missingOK, keepSecret bool
@@ -428,7 +518,10 @@ func setPath(m *yaml.Node, path []string, value string) error {
 				if cur.Tag == "!!str" {
 					tag = "!!str"
 				}
-				*cur = yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value}
+				// Keep the field's comments: on `runner set` they describe a
+				// live runner, not a template.
+				*cur = yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value,
+					HeadComment: cur.HeadComment, LineComment: cur.LineComment, FootComment: cur.FootComment}
 				return nil
 			}
 			m.Content = append(m.Content,
@@ -444,6 +537,17 @@ func setPath(m *yaml.Node, path []string, value string) error {
 		m = cur
 	}
 	return nil
+}
+
+// pathValue is the node at a dotted path, or nil if any part is missing.
+func pathValue(m *yaml.Node, path []string) *yaml.Node {
+	for _, key := range path {
+		if m == nil || m.Kind != yaml.MappingNode {
+			return nil
+		}
+		m = mappingValue(m, key)
+	}
+	return m
 }
 
 // scalarTag is the tag YAML would resolve an unquoted value to, so that

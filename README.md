@@ -329,6 +329,9 @@ splitscreen runner add box-foo --template box-template \
 splitscreen route add C0BOXFOO01 box-foo
 systemctl reload splitscreen-gateway
 
+splitscreen runner set box-foo --set harness_secret=claude-token-b   # change a live runner
+systemctl reload splitscreen-gateway
+
 splitscreen runner remove box-foo [--missing-ok]   # also drops its routes
 systemctl reload splitscreen-gateway
 ```
@@ -337,7 +340,9 @@ systemctl reload splitscreen-gateway
 typed as YAML would read them. `token_secret` is never copied from the template. A
 template's `wake` block is copied without its `ec2_instance`; the copy wakes its own
 `host` when that is an instance id (or whatever `--set wake.ec2_instance` says), so
-`--set host=i-…` alone makes a wakeable runner. `runner remove` removes every route to the runner in the same edit and deletes
+`--set host=i-…` alone makes a wakeable runner. `runner set` applies the same `--set`
+overrides to an existing runner in place (its routes and comments stay); it does not
+re-derive the wake target from a new `host`. `runner remove` removes every route to the runner in the same edit and deletes
 its file in `secrets_dir`; on reload the gateway disconnects it and refuses its token
 from then on. Every edit takes a lock beside the config file, so concurrent invocations
 cannot lose each other's changes, and keeps the file's owner when run as root.
