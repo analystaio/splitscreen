@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -343,5 +344,34 @@ func TestRateLimitsKeepLatestPerAccountWindow(t *testing.T) {
 	}
 	if b.Account != "acct-b" || b.Status != "rejected" {
 		t.Errorf("acct-b = %+v", b)
+	}
+}
+
+func TestOpenReadOnlySeesReadingsAndRefusesWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.db")
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	if err := w.RecordRateLimits("acct", "box-1", []RateLimit{{Window: "five_hour", Utilization: 0.3}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got, err := r.RateLimits()
+	if err != nil || len(got) != 1 || got[0].Utilization != 0.3 {
+		t.Fatalf("rows = %+v, err %v", got, err)
+	}
+	if err := r.RecordRateLimits("acct", "box-1", []RateLimit{{Window: "five_hour", Utilization: 0.9}}); err == nil {
+		t.Error("a read-only store accepted a write")
+	}
+
+	if _, err := OpenReadOnly(filepath.Join(t.TempDir(), "missing.db")); err == nil {
+		t.Error("opening a missing database read-only should fail, not create it")
 	}
 }

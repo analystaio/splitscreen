@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver; keeps static builds static
@@ -49,6 +50,21 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: record migration: %w", err)
 	}
+	return &Store{db: db, now: time.Now}, nil
+}
+
+// OpenReadOnly opens an existing database for reading only, applying no
+// schema. It is for CLI reports run beside a live gateway: they must not
+// write, and must not create files the gateway's own user cannot open.
+func OpenReadOnly(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("store: open: %w", err)
+	}
+	db.SetMaxOpenConns(1)
 	return &Store{db: db, now: time.Now}, nil
 }
 

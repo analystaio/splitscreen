@@ -62,7 +62,7 @@ func TestCommandTree(t *testing.T) {
 		hidden[c.Name()] = c.Hidden
 	}
 	for _, want := range []string{"gateway", "runner", "enroll", "config", "cert",
-		"credential-helper", "permission-shim", "mcp-shim", "send-file"} {
+		"credential-helper", "permission-shim", "mcp-shim", "send-file", "usage"} {
 		if !cmds[want] {
 			t.Errorf("missing subcommand %q", want)
 		}
