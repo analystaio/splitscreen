@@ -52,6 +52,13 @@ func TestRoundTrip(t *testing.T) {
 			InputTokens: 100, CacheWriteTokens: 20, CacheReadTokens: 9000, OutputTokens: 400,
 			Known: true,
 		}},
+		{"usage with rate limits", DirUp, &Usage{
+			TurnID: "turn1",
+			RateLimits: []RateLimit{
+				{Window: "five_hour", Utilization: 1.01, ResetsAt: 1793136600, Status: "rejected"},
+				{Window: "seven_day", Utilization: 0.17, ResetsAt: 1793534400, Status: "allowed"},
+			},
+		}},
 		{"done", DirUp, &Done{TurnID: "turn1", SessionID: "s1"}},
 		{"done interrupted", DirUp, &Done{TurnID: "turn1", Interrupted: true}},
 		{"turn.cancel", DirDown, &TurnCancel{ThreadID: "th1", TurnID: "turn1", By: &UserRef{ID: "U1"}}},

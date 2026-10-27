@@ -155,3 +155,18 @@ CREATE TABLE IF NOT EXISTS queued_messages (
     at        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_queued_runner ON queued_messages(runner, id);
+
+-- The latest subscription rate-limit reading per account and window, as the
+-- harness reported it at the end of a turn. Keyed by account rather than
+-- runner because the limit belongs to the account: every runner sharing a
+-- token draws from, and refreshes, the same windows.
+CREATE TABLE IF NOT EXISTS rate_limits (
+    account      TEXT NOT NULL,
+    limit_window TEXT NOT NULL,
+    utilization  REAL NOT NULL,
+    resets_at    INTEGER,
+    status       TEXT,
+    runner       TEXT NOT NULL,
+    at           TEXT NOT NULL,
+    PRIMARY KEY (account, limit_window)
+);

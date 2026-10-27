@@ -186,6 +186,9 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 	case "cost":
 		g.notice(ctx, in, g.CostText(7*24*time.Hour))
 		return
+	case "usage":
+		g.notice(ctx, in, g.UsageText(runnerName, rc))
+		return
 	case "routes":
 		g.notice(ctx, in, g.RoutesText())
 		return
@@ -641,7 +644,7 @@ func parseCommand(text string) (rest, cmd, arg string) {
 	}
 	cmd = strings.ToLower(fields[0])
 	switch cmd {
-	case "new", "rebind", "status", "cost", "routes", "stop":
+	case "new", "rebind", "status", "cost", "usage", "routes", "stop":
 	case "runner":
 		if len(fields) > 1 {
 			arg = fields[1]

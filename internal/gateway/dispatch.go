@@ -600,6 +600,7 @@ func (g *Gateway) onUsage(c *Conn, fr *protocol.Usage) {
 	// token counters already capture.
 	rc, _ := g.runnerConfig(c.runner)
 	billsInDollars := rc == nil || rc.Billing != "subscription"
+	g.recordRateLimits(c.runner, rc, fr.RateLimits)
 
 	if fr.Known && billsInDollars {
 		if cost, ok := g.prices.Cost(fr.Model, pricing.Counters{

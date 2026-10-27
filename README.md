@@ -123,6 +123,7 @@ this replaces the per-runner allowlists a single-process bridge needs.
 | `!status` | Runner roster, connection state, bundle versions, queue depths |
 | `!routes` | The routing table |
 | `!cost` | Spend and token usage for the last week |
+| `!usage` | Subscription rate-limit windows (5h, 7d) per account, from each account's latest turn |
 
 A turn that runs longer than a few seconds also gets a **Stop** button under
 it, which does the same as `!stop`. Stopping interrupts the harness and keeps

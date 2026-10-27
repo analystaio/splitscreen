@@ -43,6 +43,18 @@ type Usage struct {
 	TTLHint          string
 	ProviderCostUSD  *float64
 	Known            bool
+	// RateLimits is the subscription-window reading the harness reported
+	// during the turn, if any. Independent of Known.
+	RateLimits []RateLimit
+}
+
+// RateLimit is one subscription window: Window is the harness's name for it,
+// Utilization the fraction used, ResetsAt Unix seconds (zero when unknown).
+type RateLimit struct {
+	Window      string
+	Utilization float64
+	ResetsAt    int64
+	Status      string
 }
 
 // Event is one thing a harness said.

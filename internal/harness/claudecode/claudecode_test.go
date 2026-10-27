@@ -3,6 +3,7 @@ package claudecode
 import (
 	"io"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -372,3 +373,72 @@ func TestInterruptWritesControlRequest(t *testing.T) {
 type nopWriteCloser struct{ io.Writer }
 
 func (nopWriteCloser) Close() error { return nil }
+
+// usageEvents returns every usage event a stream produced, in order.
+func usageEvents(t *testing.T, s *session) []harness.Usage {
+	t.Helper()
+	var out []harness.Usage
+	for _, ev := range collect(t, s) {
+		if ev.Kind == harness.EventUsage {
+			out = append(out, ev.Usage)
+		}
+	}
+	return out
+}
+
+// The events below are real CLI output (2.1.311), captured on an account
+// under its limits and on one refused for its weekly limit.
+const (
+	allowedRateLimitEvent  = `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1793144400,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled_until","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.01,"resetsAt":1793144400,"status":"allowed"},"seven_day":{"utilization":0.55,"resetsAt":1793224800,"status":"allowed"}}},"session_id":"s1"}`
+	rejectedRateLimitEvent = `{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1793167200,"rateLimitType":"seven_day","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0,"resetsAt":1793146200,"status":"allowed"},"seven_day":{"utilization":1,"resetsAt":1793167200,"status":"rejected","surpassedThreshold":1}}},"session_id":"s1"}`
+)
+
+func TestRateLimitEventRidesOnUsage(t *testing.T) {
+	s := newParser(t, allowedRateLimitEvent+"\n"+
+		`{"type":"result","session_id":"s1","usage":{"input_tokens":5,"output_tokens":2}}`)
+	us := usageEvents(t, s)
+	if len(us) != 1 {
+		t.Fatalf("usage events = %d, want 1", len(us))
+	}
+	want := []harness.RateLimit{
+		{Window: "five_hour", Utilization: 0.01, ResetsAt: 1793144400, Status: "allowed"},
+		{Window: "seven_day", Utilization: 0.55, ResetsAt: 1793224800, Status: "allowed"},
+	}
+	if !reflect.DeepEqual(us[0].RateLimits, want) {
+		t.Fatalf("rate limits = %+v, want %+v", us[0].RateLimits, want)
+	}
+}
+
+func TestRejectedTurnStillReportsRateLimits(t *testing.T) {
+	// A refused turn has no token counts, but is when the reading matters most.
+	s := newParser(t, rejectedRateLimitEvent+"\n"+
+		`{"type":"result","session_id":"s1","is_error":true}`)
+	us := usageEvents(t, s)
+	if len(us) != 1 || us[0].Known {
+		t.Fatalf("usage = %+v, want one unknown usage", us)
+	}
+	if got := us[0].RateLimits; len(got) != 2 || got[1].Window != "seven_day" || got[1].Status != "rejected" || got[1].Utilization != 1 {
+		t.Fatalf("rate limits = %+v", got)
+	}
+}
+
+func TestRateLimitsDoNotCarryIntoTheNextTurn(t *testing.T) {
+	s := newParser(t, allowedRateLimitEvent+"\n"+
+		`{"type":"result","session_id":"s1"}`+"\n"+
+		`{"type":"result","session_id":"s1"}`)
+	us := usageEvents(t, s)
+	if len(us) != 2 || len(us[0].RateLimits) != 2 || us[1].RateLimits != nil {
+		t.Fatalf("usage = %+v", us)
+	}
+}
+
+func TestRateLimitEventWithoutWindowsFallsBack(t *testing.T) {
+	s := newParser(t, `{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":100,"rateLimitType":"five_hour","utilization":0.8}}`+"\n"+
+		`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`+"\n"+
+		`{"type":"result","session_id":"s1"}`)
+	us := usageEvents(t, s)
+	want := []harness.RateLimit{{Window: "five_hour", Utilization: 0.8, ResetsAt: 100, Status: "allowed_warning"}}
+	if len(us) != 1 || !reflect.DeepEqual(us[0].RateLimits, want) {
+		t.Fatalf("usage = %+v, want rate limits %+v (an empty event must not erase a reading)", us, want)
+	}
+}

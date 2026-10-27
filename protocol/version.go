@@ -12,7 +12,7 @@ import (
 // mismatched versions in flight. Bump Major for any change that removes a
 // frame, removes a field, or changes the meaning of an existing field. Bump
 // Minor for additive changes (new frame types, new optional fields).
-const Version = "1.2"
+const Version = "1.3"
 
 // MinorTurnCancel is the first minor that understands turn.cancel. An older
 // runner drops the frame as unknown, so the gateway checks before offering to
