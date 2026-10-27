@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -271,6 +272,56 @@ type streamEvent struct {
 	IsError   bool            `json:"is_error"`
 	Result    string          `json:"result"`
 	Model     string          `json:"model"`
+	// RateLimitInfo is the payload of a rate_limit_event.
+	RateLimitInfo *rawRateLimitInfo `json:"rate_limit_info"`
+}
+
+// rawRateLimitInfo is a rate_limit_event's payload. The top-level fields
+// describe whichever window decided the status; UnifiedWindows, when present,
+// carries every window, which is what a usage readout wants.
+type rawRateLimitInfo struct {
+	Status         string                    `json:"status"`
+	ResetsAt       int64                     `json:"resetsAt"`
+	RateLimitType  string                    `json:"rateLimitType"`
+	Utilization    *float64                  `json:"utilization"`
+	UnifiedWindows map[string]rawLimitWindow `json:"unifiedWindows"`
+}
+
+type rawLimitWindow struct {
+	Utilization float64 `json:"utilization"`
+	ResetsAt    int64   `json:"resetsAt"`
+	Status      string  `json:"status"`
+}
+
+// rateLimits normalizes a rate_limit_event, in window-name order so the
+// result is deterministic. It falls back to the single deciding window when
+// the CLI sends no per-window breakdown, and returns nil when there is nothing
+// usable rather than inventing a zero.
+func (i *rawRateLimitInfo) rateLimits() []harness.RateLimit {
+	if i == nil {
+		return nil
+	}
+	if len(i.UnifiedWindows) > 0 {
+		names := make([]string, 0, len(i.UnifiedWindows))
+		for name := range i.UnifiedWindows {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		out := make([]harness.RateLimit, 0, len(names))
+		for _, name := range names {
+			w := i.UnifiedWindows[name]
+			out = append(out, harness.RateLimit{
+				Window: name, Utilization: w.Utilization, ResetsAt: w.ResetsAt, Status: w.Status,
+			})
+		}
+		return out
+	}
+	if i.RateLimitType == "" || i.Utilization == nil {
+		return nil
+	}
+	return []harness.RateLimit{{
+		Window: i.RateLimitType, Utilization: *i.Utilization, ResetsAt: i.ResetsAt, Status: i.Status,
+	}}
 }
 
 type rawUsage struct {
@@ -363,6 +414,9 @@ func (s *session) readStdout(r io.Reader) {
 	sc.Buffer(make([]byte, 0, 256*1024), 16*1024*1024)
 
 	var lastModel string
+	// rateLimits holds the turn's latest rate_limit_event until its result
+	// carries it out with the usage.
+	var rateLimits []harness.RateLimit
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
@@ -380,6 +434,11 @@ func (s *session) readStdout(r io.Reader) {
 		}
 
 		switch ev.Type {
+		case "rate_limit_event":
+			if rl := ev.RateLimitInfo.rateLimits(); rl != nil {
+				rateLimits = rl
+			}
+
 		case "system":
 			if ev.Subtype == "init" && ev.SessionID != "" {
 				s.emit(harness.Event{Kind: harness.EventSession, SessionID: ev.SessionID})
@@ -444,7 +503,8 @@ func (s *session) readStdout(r io.Reader) {
 			}
 
 		case "result":
-			usage := harness.Usage{Model: lastModel}
+			usage := harness.Usage{Model: lastModel, RateLimits: rateLimits}
+			rateLimits = nil
 			if ev.Model != "" {
 				usage.Model = ev.Model
 			}

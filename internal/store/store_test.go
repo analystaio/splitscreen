@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -302,5 +303,75 @@ func TestFailOpenTurnsClosesOnlyRunning(t *testing.T) {
 	// Idempotent: a second sweep finds nothing.
 	if n, err := s.FailOpenTurns("gateway_restart"); err != nil || n != 0 {
 		t.Fatalf("second sweep: n=%d err=%v", n, err)
+	}
+}
+
+func TestRateLimitsKeepLatestPerAccountWindow(t *testing.T) {
+	s := open(t)
+	t0 := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return t0 })
+	reset := time.Unix(1793144400, 0)
+
+	if err := s.RecordRateLimits("acct-a", "box-1", []RateLimit{
+		{Window: "five_hour", Utilization: 0.10, ResetsAt: reset, Status: "allowed"},
+		{Window: "seven_day", Utilization: 0.50, Status: "allowed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// A later reading from another runner on the same account replaces only
+	// the windows it carries.
+	s.SetClock(func() time.Time { return t0.Add(time.Minute) })
+	if err := s.RecordRateLimits("acct-a", "box-2", []RateLimit{
+		{Window: "five_hour", Utilization: 0.20, ResetsAt: reset, Status: "allowed"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.RecordRateLimits("acct-b", "box-3", []RateLimit{{Window: "seven_day", Utilization: 1, Status: "rejected"}})
+
+	got, err := s.RateLimits()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("rows = %+v, want 3", got)
+	}
+	five, seven, b := got[0], got[1], got[2]
+	if five.Window != "five_hour" || five.Utilization != 0.20 || five.Runner != "box-2" || !five.ResetsAt.Equal(reset) || !five.At.Equal(t0.Add(time.Minute)) {
+		t.Errorf("five_hour = %+v", five)
+	}
+	if seven.Window != "seven_day" || seven.Utilization != 0.50 || seven.Runner != "box-1" || !seven.ResetsAt.IsZero() {
+		t.Errorf("seven_day = %+v", seven)
+	}
+	if b.Account != "acct-b" || b.Status != "rejected" {
+		t.Errorf("acct-b = %+v", b)
+	}
+}
+
+func TestOpenReadOnlySeesReadingsAndRefusesWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "s.db")
+	w, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	if err := w.RecordRateLimits("acct", "box-1", []RateLimit{{Window: "five_hour", Utilization: 0.3}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := OpenReadOnly(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	got, err := r.RateLimits()
+	if err != nil || len(got) != 1 || got[0].Utilization != 0.3 {
+		t.Fatalf("rows = %+v, err %v", got, err)
+	}
+	if err := r.RecordRateLimits("acct", "box-1", []RateLimit{{Window: "five_hour", Utilization: 0.9}}); err == nil {
+		t.Error("a read-only store accepted a write")
+	}
+
+	if _, err := OpenReadOnly(filepath.Join(t.TempDir(), "missing.db")); err == nil {
+		t.Error("opening a missing database read-only should fail, not create it")
 	}
 }

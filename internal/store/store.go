@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	_ "modernc.org/sqlite" // pure-Go driver; keeps static builds static
@@ -49,6 +50,21 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("store: record migration: %w", err)
 	}
+	return &Store{db: db, now: time.Now}, nil
+}
+
+// OpenReadOnly opens an existing database for reading only, applying no
+// schema. It is for CLI reports run beside a live gateway: they must not
+// write, and must not create files the gateway's own user cannot open.
+func OpenReadOnly(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("store: %w", err)
+	}
+	db, err := sql.Open("sqlite", "file:"+path+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, fmt.Errorf("store: open: %w", err)
+	}
+	db.SetMaxOpenConns(1)
 	return &Store{db: db, now: time.Now}, nil
 }
 
@@ -227,6 +243,68 @@ func (s *Store) RecordUsage(turnID string, u Usage) error {
 		return fmt.Errorf("store: record usage: %w", err)
 	}
 	return nil
+}
+
+// RateLimit is one subscription window's latest reading for an account.
+type RateLimit struct {
+	Account     string
+	Window      string
+	Utilization float64
+	// ResetsAt is the zero time when the harness did not say.
+	ResetsAt time.Time
+	Status   string
+	// Runner is the runner whose turn produced the reading.
+	Runner string
+	At     time.Time
+}
+
+// RecordRateLimits stores the windows in a reading, replacing each one's
+// previous value. Windows the reading leaves out keep their last value: a
+// harness reporting only the window that changed must not erase the others.
+func (s *Store) RecordRateLimits(account, runner string, limits []RateLimit) error {
+	at := s.ts()
+	for _, rl := range limits {
+		var resets any
+		if !rl.ResetsAt.IsZero() {
+			resets = rl.ResetsAt.Unix()
+		}
+		if _, err := s.db.Exec(`
+			INSERT INTO rate_limits(account, limit_window, utilization, resets_at, status, runner, at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(account, limit_window) DO UPDATE SET
+				utilization = excluded.utilization, resets_at = excluded.resets_at,
+				status = excluded.status, runner = excluded.runner, at = excluded.at`,
+			account, rl.Window, rl.Utilization, resets, nullString(rl.Status), runner, at); err != nil {
+			return fmt.Errorf("store: record rate limits: %w", err)
+		}
+	}
+	return nil
+}
+
+// RateLimits returns every stored reading, ordered by account then window.
+func (s *Store) RateLimits() ([]RateLimit, error) {
+	rows, err := s.db.Query(`
+		SELECT account, limit_window, utilization, resets_at, COALESCE(status, ''), runner, at
+		FROM rate_limits ORDER BY account, limit_window`)
+	if err != nil {
+		return nil, fmt.Errorf("store: rate limits: %w", err)
+	}
+	defer rows.Close()
+	var out []RateLimit
+	for rows.Next() {
+		var rl RateLimit
+		var resets sql.NullInt64
+		var at string
+		if err := rows.Scan(&rl.Account, &rl.Window, &rl.Utilization, &resets, &rl.Status, &rl.Runner, &at); err != nil {
+			return nil, fmt.Errorf("store: rate limits: %w", err)
+		}
+		if resets.Valid {
+			rl.ResetsAt = time.Unix(resets.Int64, 0)
+		}
+		rl.At, _ = time.Parse(time.RFC3339Nano, at)
+		out = append(out, rl)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) FinishTurn(turnID, status, errMsg string, durationMS int64, toolCalls int) error {

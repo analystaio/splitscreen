@@ -24,6 +24,7 @@ func allCommands() []*cobra.Command {
 		enrollCmd(),
 		configCmd(),
 		routeCmd(),
+		usageCmd(),
 		policyCmd(),
 		certCmd(),
 		credentialHelperCmd(),

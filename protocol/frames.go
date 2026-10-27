@@ -884,6 +884,25 @@ type Usage struct {
 	// these separately: a dashboard silently reporting $0 for an
 	// un-instrumented harness is worse than one reporting nothing.
 	Known bool `json:"known"`
+
+	// RateLimits is the harness's latest reading of the subscription windows
+	// (five-hour, seven-day, ...) of the account the turn ran on. It is
+	// independent of Known: a turn refused for the limit has no token counts
+	// but is exactly when the reading matters. Empty when the harness sent none.
+	RateLimits []RateLimit `json:"rate_limits,omitempty"`
+}
+
+// RateLimit is one subscription window as the harness reported it.
+type RateLimit struct {
+	// Window is the harness's own name for it ("five_hour", "seven_day").
+	Window string `json:"window"`
+	// Utilization is the fraction used; it can exceed 1 once the window is
+	// exhausted.
+	Utilization float64 `json:"utilization"`
+	// ResetsAt is Unix seconds, zero when unknown.
+	ResetsAt int64 `json:"resets_at,omitempty"`
+	// Status is "allowed", "allowed_warning" or "rejected".
+	Status string `json:"status,omitempty"`
 }
 
 func (*Usage) Type() FrameType      { return TypeUsage }
@@ -902,6 +921,14 @@ func (u *Usage) Validate() error {
 	}
 	if !u.Known && (u.InputTokens|u.CacheWriteTokens|u.CacheReadTokens|u.OutputTokens) != 0 {
 		errs = append(errs, errors.New("usage: counters must be zero when known is false"))
+	}
+	for _, rl := range u.RateLimits {
+		if rl.Window == "" {
+			errs = append(errs, errors.New("usage: rate limit window is required"))
+		}
+		if rl.Utilization < 0 {
+			errs = append(errs, errors.New("usage: rate limit utilization must be non-negative"))
+		}
 	}
 	return errors.Join(errs...)
 }

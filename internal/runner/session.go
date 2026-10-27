@@ -369,6 +369,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 				TTLHint:          ev.Usage.TTLHint,
 				ProviderCostUSD:  ev.Usage.ProviderCostUSD,
 				Known:            ev.Usage.Known,
+				RateLimits:       rateLimitFrames(ev.Usage.RateLimits),
 			})
 
 		case harness.EventDone:
@@ -690,4 +691,20 @@ func withContext(msg *protocol.Message) string {
 		return msg.Context
 	}
 	return msg.Context + "\n" + msg.Text
+}
+
+// rateLimitFrames carries the harness's subscription-window reading onto the
+// wire unchanged; the gateway decides which account it belongs to.
+func rateLimitFrames(in []harness.RateLimit) []protocol.RateLimit {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]protocol.RateLimit, len(in))
+	for i, rl := range in {
+		out[i] = protocol.RateLimit{
+			Window: rl.Window, Utilization: rl.Utilization,
+			ResetsAt: rl.ResetsAt, Status: rl.Status,
+		}
+	}
+	return out
 }
