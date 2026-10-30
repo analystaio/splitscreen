@@ -41,6 +41,8 @@ const (
 	// Bulk transfer control (payload rides on binary frames, see blob.go).
 	TypeBlobBegin FrameType = "blob.begin"
 	TypeBlobEnd   FrameType = "blob.end"
+	// TypeBlobReceipt tells a runner whether its upload reached the surface.
+	TypeBlobReceipt FrameType = "blob.receipt"
 
 	// Liveness.
 	TypePing FrameType = "ping"
@@ -1002,6 +1004,30 @@ func (b *BlobEnd) Validate() error {
 	}
 	if !b.OK && b.Error == "" {
 		errs = append(errs, errors.New("blob.end: a failed transfer must carry an error"))
+	}
+	return errors.Join(errs...)
+}
+
+// BlobReceipt answers a runner's completed upload with what became of it. A
+// clean blob.end only means the bytes reached the gateway; the surface upload
+// can still fail, or find no turn to deliver into, and the runner should not
+// tell its caller "sent" for a file nobody will see.
+type BlobReceipt struct {
+	BlobID string `json:"blob"`
+	OK     bool   `json:"ok"`
+	Error  string `json:"error,omitempty"`
+}
+
+func (*BlobReceipt) Type() FrameType      { return TypeBlobReceipt }
+func (*BlobReceipt) Direction() Direction { return DirDown }
+
+func (b *BlobReceipt) Validate() error {
+	var errs []error
+	if b.BlobID == "" {
+		errs = append(errs, errors.New("blob.receipt: blob is required"))
+	}
+	if !b.OK && b.Error == "" {
+		errs = append(errs, errors.New("blob.receipt: a failed delivery must carry an error"))
 	}
 	return errors.Join(errs...)
 }

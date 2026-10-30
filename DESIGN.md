@@ -176,6 +176,7 @@ rolling upgrade always has mismatched versions in flight.
 | ↓ | `bundle.push` | New config bundle version |
 | ↓ | `permission.response` | Result of a permission prompt |
 | ↓ | `blob.*` | Inbound file chunks |
+| ↓ | `blob.receipt` | Whether a runner's upload reached the surface (1.4+) |
 | ↓ | `mcp.response` | Result of a proxied MCP call |
 | ↓ | `credential.grant` | Ephemeral harness/forge credential, or a policy refusal |
 | ↑ | `text.delta` | Streaming assistant output |
@@ -713,6 +714,15 @@ permission prompt. Never buffer whole files in memory.
 **Outbound.** A local helper writes to the runner's unix socket; the runner emits the same
 framing in reverse; the gateway uploads to the surface. One implementation, both
 directions.
+
+**Delivery receipts (1.4).** A clean `blob.end` only means the bytes reached the
+gateway. The gateway then answers with `blob.receipt`: `ok`, or the reason the file was
+not delivered (no live turn, surface unavailable, upload refused, checksum mismatch).
+The runner holds the helper's call open until the receipt arrives, so `send-file`
+prints "sent" only for a file that was posted, and fails with the reason otherwise.
+Each side checks the other's minor first: a gateway sends receipts only to 1.4+
+runners, and a runner waits only on a 1.4+ gateway. Every undelivered file is also
+logged as a warning on the gateway, in addition to its row in the blobs table.
 
 Above a cap (~50MB), reject with a clear in-thread message rather than chunking. Add an
 object-store handoff only if real usage demands it.

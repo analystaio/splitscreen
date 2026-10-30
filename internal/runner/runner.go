@@ -86,7 +86,11 @@ type Runner struct {
 	// activeTouched (unix nanos) throttles the activity marker.
 	activeTouched atomic.Int64
 	pending       sync.Map // request id -> chan any
-	blobs         sync.Map // blob id -> *inboundBlob
+	// gatewayMinor is the protocol minor from the last hello_ack, 0 before one
+	// arrives; send-file waits for a delivery receipt only when it is new
+	// enough to send one.
+	gatewayMinor atomic.Int32
+	blobs        sync.Map // blob id -> *inboundBlob
 
 	// plugins are the enabled plugins' directories for the current bundle.
 	plugins pluginSet
@@ -330,6 +334,11 @@ func (r *Runner) handleFrame(ctx context.Context, f protocol.Frame) {
 		_ = r.send(ctx, &protocol.Pong{Nonce: fr.Nonce})
 	case *protocol.Pong:
 	case *protocol.HelloAck:
+		var minor int32
+		if v, err := protocol.ParseVersion(fr.Protocol); err == nil && v.Major == protocol.Ours().Major {
+			minor = int32(v.Minor)
+		}
+		r.gatewayMinor.Store(minor)
 		r.log.Info("registered with gateway",
 			"runner", fr.Runner, "routes", fr.Routes, "bundle", fr.Bundle.Version)
 	case *protocol.BundlePush:
@@ -365,6 +374,8 @@ func (r *Runner) handleFrame(ctx context.Context, f protocol.Frame) {
 		r.onBlobBegin(fr)
 	case *protocol.BlobEnd:
 		r.onBlobEnd(fr)
+	case *protocol.BlobReceipt:
+		r.resolvePending(fr.BlobID, fr)
 	case *protocol.Error:
 		r.log.Error("gateway reported an error", "code", fr.Code, "message", fr.Message)
 	default:

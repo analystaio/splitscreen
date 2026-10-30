@@ -225,6 +225,12 @@ func newHarness(t *testing.T) *harness {
 // connect performs the runner handshake and returns the socket.
 func (h *harness) connect(t *testing.T, token string) *websocket.Conn {
 	t.Helper()
+	return h.connectSpeaking(t, token, protocol.Version)
+}
+
+// connectSpeaking is connect for a runner on another protocol version.
+func (h *harness) connectSpeaking(t *testing.T, token, proto string) *websocket.Conn {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -235,7 +241,7 @@ func (h *harness) connect(t *testing.T, token string) *websocket.Conn {
 	t.Cleanup(func() { ws.Close(websocket.StatusNormalClosure, "") })
 
 	hello, err := protocol.Encode(&protocol.Hello{
-		Protocol: protocol.Version,
+		Protocol: proto,
 		Runner:   "alpha",
 		Auth:     protocol.Auth{Mode: protocol.AuthToken, Value: token},
 		Host:     protocol.Host{OS: "linux", Arch: "amd64"},
