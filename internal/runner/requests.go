@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/analystaio/splitscreen/internal/mcpproxy"
 	"github.com/analystaio/splitscreen/protocol"
@@ -205,10 +206,42 @@ func (r *Runner) sendFile(ctx context.Context, threadID, path, comment string) e
 			return rerr
 		}
 	}
-	return r.send(ctx, &protocol.BlobEnd{
+	end := &protocol.BlobEnd{
 		BlobID: blobID, SHA256: hex.EncodeToString(hash.Sum(nil)), OK: true,
-	})
+	}
+	if r.gatewayMinor.Load() < protocol.MinorBlobReceipt {
+		// An older gateway sends no receipt: the bytes left, which is all
+		// this side can know.
+		return r.send(ctx, end)
+	}
+	// Wait for the gateway's word that the file reached the surface. Without
+	// it a file the gateway could not deliver still read as "sent".
+	rctx, cancel := context.WithTimeout(ctx, blobReceiptTimeout)
+	defer cancel()
+	v, err := r.request(rctx, blobID, end)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("runner: no delivery receipt for %s within %s", filepath.Base(path), blobReceiptTimeout)
+		}
+		return err
+	}
+	switch reply := v.(type) {
+	case error:
+		return reply
+	case *protocol.BlobReceipt:
+		if !reply.OK {
+			return fmt.Errorf("gateway did not deliver %s: %s", filepath.Base(path), reply.Error)
+		}
+		return nil
+	default:
+		return fmt.Errorf("runner: unexpected reply %T", v)
+	}
 }
+
+// blobReceiptTimeout bounds the wait for a delivery receipt. The gateway
+// answers once its surface upload returns, so this covers a slow upload of a
+// file near the size cap, and stays inside send-file's own 5-minute deadline.
+var blobReceiptTimeout = 3 * time.Minute
 
 func guessMime(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {

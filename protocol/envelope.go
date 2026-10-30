@@ -33,6 +33,7 @@ var registry = map[FrameType]func() Frame{
 	TypeError:              func() Frame { return new(Error) },
 	TypeBlobBegin:          func() Frame { return new(BlobBegin) },
 	TypeBlobEnd:            func() Frame { return new(BlobEnd) },
+	TypeBlobReceipt:        func() Frame { return new(BlobReceipt) },
 	TypePing:               func() Frame { return new(Ping) },
 	TypePong:               func() Frame { return new(Pong) },
 }

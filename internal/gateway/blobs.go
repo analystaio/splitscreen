@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -177,6 +178,7 @@ func (g *Gateway) onChunk(c *Conn, hdr protocol.ChunkHeader, payload []byte) {
 func (g *Gateway) onBlobEnd(ctx context.Context, c *Conn, fr *protocol.BlobEnd) {
 	v, ok := c.blobs.LoadAndDelete(fr.BlobID)
 	if !ok {
+		g.sendReceipt(c, fr.BlobID, "unknown blob")
 		return
 	}
 	b := v.(*incomingBlob)
@@ -199,50 +201,51 @@ func (g *Gateway) onBlobEnd(ctx context.Context, c *Conn, fr *protocol.BlobEnd) 
 		rec.SurfaceUser = b.turn.User.ID
 	}
 
-	if !fr.OK {
-		rec.OK = false
-		rec.Error = fr.Error
-		_ = g.store.RecordBlob(rec)
-		g.log.Warn("runner reported a failed transfer", "blob", fr.BlobID, "err", fr.Error)
-		return
+	err := g.deliverBlob(ctx, b, fr, &rec)
+	b.closed = true
+	rec.OK = err == nil
+	if err != nil {
+		rec.Error = err.Error()
+		// Every failure is logged: before this, "no live turn" was only a row
+		// in the blobs table while the runner told its caller "sent".
+		g.log.Warn("outbound file not delivered", "runner", c.runner, "blob", fr.BlobID,
+			"name", rec.Name, "turn", b.meta.TurnID, "err", err)
 	}
+	if serr := g.store.RecordBlob(rec); serr != nil {
+		g.log.Error("record blob failed", "err", serr)
+	}
+	g.sendReceipt(c, fr.BlobID, rec.Error)
+}
 
+// deliverBlob uploads a completed runner transfer to the turn's surface,
+// filling in the record's checksum and size along the way.
+func (g *Gateway) deliverBlob(ctx context.Context, b *incomingBlob, fr *protocol.BlobEnd, rec *store.BlobRecord) error {
+	if !fr.OK {
+		return fmt.Errorf("runner reported a failed transfer: %s", fr.Error)
+	}
+	if b.closed {
+		return errors.New("upload spool write failed")
+	}
 	sum := hex.EncodeToString(b.sum.Sum(nil))
 	if fr.SHA256 != "" && fr.SHA256 != sum {
-		rec.OK = false
-		rec.Error = "checksum mismatch"
-		_ = g.store.RecordBlob(rec)
-		g.log.Error("upload checksum mismatch", "blob", fr.BlobID, "want", fr.SHA256, "got", sum)
-		return
+		return fmt.Errorf("checksum mismatch: want %s, got %s", fr.SHA256, sum)
 	}
 	rec.SHA256 = sum
 
-	info, err := b.file.Stat()
-	if err == nil {
+	if info, err := b.file.Stat(); err == nil {
 		rec.Size = info.Size()
 	}
 
 	if b.turn == nil {
-		rec.OK = false
-		rec.Error = "no live turn to deliver to"
-		_ = g.store.RecordBlob(rec)
-		return
+		return errors.New("no live turn to deliver to")
 	}
 	srf, ok := g.surfaceFor(b.turn.Surface)
 	if !ok {
-		rec.OK = false
-		rec.Error = "surface unavailable"
-		_ = g.store.RecordBlob(rec)
-		return
+		return errors.New("surface unavailable")
 	}
-
 	if _, err := b.file.Seek(0, io.SeekStart); err != nil {
-		rec.OK = false
-		rec.Error = err.Error()
-		_ = g.store.RecordBlob(rec)
-		return
+		return err
 	}
-
 	if err := srf.Upload(ctx, surface.Upload{
 		Channel: b.turn.Channel,
 		Thread:  b.turn.Thread,
@@ -251,12 +254,18 @@ func (g *Gateway) onBlobEnd(ctx context.Context, c *Conn, fr *protocol.BlobEnd) 
 		Content: b.file,
 		Size:    rec.Size,
 	}); err != nil {
-		rec.OK = false
-		rec.Error = err.Error()
-		g.log.Error("surface upload failed", "err", err)
-	} else {
-		rec.OK = true
+		return fmt.Errorf("surface upload failed: %w", err)
 	}
-	_ = g.store.RecordBlob(rec)
-	b.closed = true
+	return nil
+}
+
+// sendReceipt tells the runner what became of its upload, if it is new enough
+// to wait for the answer. errMsg is empty on success.
+func (g *Gateway) sendReceipt(c *Conn, blobID, errMsg string) {
+	if c.peerVer.Major != protocol.Ours().Major || c.peerVer.Minor < protocol.MinorBlobReceipt {
+		return
+	}
+	if err := c.Send(&protocol.BlobReceipt{BlobID: blobID, OK: errMsg == "", Error: errMsg}); err != nil {
+		g.log.Warn("blob receipt not sent", "runner", c.runner, "blob", blobID, "err", err)
+	}
 }
