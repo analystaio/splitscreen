@@ -629,3 +629,85 @@ routes:
 		}
 	}
 }
+
+func TestRouteForPrefersANamedChannelOverTheWildcard(t *testing.T) {
+	c := &Config{Routes: []Route{
+		{Channel: WildcardChannel, Runner: "any"},
+		{Channel: "C1", Runner: "named"},
+		{DM: true, Runner: "dm"},
+	}}
+	for _, tc := range []struct {
+		channel string
+		isDM    bool
+		want    string
+	}{
+		{"C1", false, "named"},
+		{"C2", false, "any"},
+		{"D1", true, "dm"},
+	} {
+		if got, ok := c.RunnerFor(tc.channel, tc.isDM); !ok || got != tc.want {
+			t.Errorf("RunnerFor(%q, %v) = %q, %v; want %q", tc.channel, tc.isDM, got, ok, tc.want)
+		}
+	}
+}
+
+func TestWildcardNeverMatchesDMs(t *testing.T) {
+	c := &Config{Routes: []Route{{Channel: WildcardChannel, Runner: "any"}}}
+	if got, ok := c.RunnerFor("D1", true); ok {
+		t.Fatalf("a DM matched the wildcard, runner %q", got)
+	}
+}
+
+func TestWildcardIsAlwaysGated(t *testing.T) {
+	if !(Route{Channel: WildcardChannel, MembersOnly: false}).Gated() {
+		t.Fatal("members_only: false turned off the wildcard's gate")
+	}
+	if (Route{Channel: "C1"}).Gated() {
+		t.Fatal("a named route is gated by default")
+	}
+}
+
+func wildcardConfig(route string) string {
+	return `
+gateway: { listen: 127.0.0.1:8443 }
+runners:
+  a: { display: { name: A }, cwd: /tmp, harness: claude-code }
+routes:
+  - ` + route + "\n"
+}
+
+func TestWildcardRouteParses(t *testing.T) {
+	c, err := Parse([]byte(wildcardConfig(`{ channel: "*", runner: a }`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Routes[0].IsWildcard() {
+		t.Fatal("not recognised as a wildcard")
+	}
+}
+
+// Unquoted, * starts a YAML alias. It must be refused, not read as something else.
+func TestUnquotedWildcardIsRefused(t *testing.T) {
+	if _, err := Parse([]byte(wildcardConfig(`{ channel: *, runner: a }`))); err == nil {
+		t.Fatal("an unquoted * parsed")
+	}
+}
+
+func TestGatedRoutesRefuseAllowBots(t *testing.T) {
+	for _, route := range []string{
+		`{ channel: "*", runner: a, allow_bots: [B1] }`,
+		`{ channel: C1, runner: a, members_only: true, allow_bots: [B1] }`,
+	} {
+		_, err := Parse([]byte(wildcardConfig(route)))
+		if err == nil || !strings.Contains(err.Error(), "allow_bots") {
+			t.Errorf("%s: err = %v, want an allow_bots error", route, err)
+		}
+	}
+}
+
+func TestSecondWildcardIsRefused(t *testing.T) {
+	cfg := wildcardConfig(`{ channel: "*", runner: a }`) + `  - { channel: "*", runner: a }` + "\n"
+	if _, err := Parse([]byte(cfg)); err == nil {
+		t.Fatal("two wildcards parsed")
+	}
+}

@@ -43,8 +43,8 @@ func (g *Gateway) RefreshChannels(ctx context.Context) {
 
 	next := map[string]channelState{}
 	for _, route := range cfg.Routes {
-		if route.DM || route.Channel == "" {
-			continue // DMs have no membership to check
+		if route.DM || route.Channel == "" || route.IsWildcard() {
+			continue // DMs have no membership to check, and a wildcard no one channel
 		}
 		for name, srf := range g.surfaces {
 			checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)

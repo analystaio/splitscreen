@@ -120,3 +120,131 @@ func TestUserDisplayPreference(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestFullMember(t *testing.T) {
+	base := func() *slack.User { return &slack.User{TeamID: "T1"} }
+	cases := []struct {
+		name string
+		mut  func(*slack.User)
+		team string
+		want bool
+	}{
+		{"member", func(*slack.User) {}, "T1", true},
+		{"multi-channel guest", func(u *slack.User) { u.IsRestricted = true }, "T1", false},
+		{"single-channel guest", func(u *slack.User) { u.IsUltraRestricted = true }, "T1", false},
+		{"stranger", func(u *slack.User) { u.IsStranger = true }, "T1", false},
+		{"deactivated", func(u *slack.User) { u.Deleted = true }, "T1", false},
+		{"bot", func(u *slack.User) { u.IsBot = true }, "T1", false},
+		{"other team, no flags", func(u *slack.User) { u.TeamID = "T2" }, "T1", false},
+		{"own team unknown", func(*slack.User) {}, "", false},
+		{"both teams empty", func(u *slack.User) { u.TeamID = "" }, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := base()
+			tc.mut(u)
+			if got := fullMember(u, tc.team); got != tc.want {
+				t.Fatalf("fullMember = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+type fakeChanAPI struct {
+	fakeDirAPI
+	ch *slack.Channel
+}
+
+func (f *fakeChanAPI) GetConversationInfoContext(context.Context, *slack.GetConversationInfoInput) (*slack.Channel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.chanCalls++
+	return f.ch, f.chanErr
+}
+
+func TestIsInternal(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*slack.Channel)
+		want bool
+	}{
+		{"internal", func(*slack.Channel) {}, true},
+		{"shared", func(c *slack.Channel) { c.IsShared = true }, false},
+		{"slack connect", func(c *slack.Channel) { c.IsExtShared = true }, false},
+		{"org shared", func(c *slack.Channel) { c.IsOrgShared = true }, false},
+		{"invite pending", func(c *slack.Channel) { c.IsPendingExtShared = true }, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := &slack.Channel{}
+			tc.mut(ch)
+			d, _ := testDirectory(&fakeChanAPI{ch: ch})
+			if got := d.isInternal(context.Background(), "C1"); got != tc.want {
+				t.Fatalf("isInternal = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTrustFailsClosedOnLookupError(t *testing.T) {
+	d, _ := testDirectory(&fakeDirAPI{userErr: errors.New("ratelimited")})
+	if d.isMember(context.Background(), "U1", "T1") {
+		t.Fatal("a failed user lookup counted as a member")
+	}
+	c, _ := testDirectory(&fakeChanAPI{fakeDirAPI: fakeDirAPI{chanErr: errors.New("missing_scope")}})
+	if c.isInternal(context.Background(), "C1") {
+		t.Fatal("a failed channel lookup counted as internal")
+	}
+}
+
+func TestTrustTreatsAnEmptyAnswerAsFailure(t *testing.T) {
+	d, _ := testDirectory(&fakeDirAPI{})
+	if d.isMember(context.Background(), "U1", "T1") {
+		t.Fatal("a nil user counted as a member")
+	}
+}
+
+// The property that makes this different from the name cache, which keeps a stale
+// value through a failure on purpose.
+func TestAnExpiredYesDoesNotSurviveAFailedLookup(t *testing.T) {
+	api := &fakeDirAPI{user: &slack.User{TeamID: "T1"}}
+	d, now := testDirectory(api)
+	ctx := context.Background()
+	if !d.isMember(ctx, "U1", "T1") {
+		t.Fatal("want member")
+	}
+	api.mu.Lock()
+	api.user, api.userErr = nil, errors.New("timeout")
+	api.mu.Unlock()
+	*now = now.Add(trustTTL + time.Second)
+	if d.isMember(ctx, "U1", "T1") {
+		t.Fatal("an expired yes survived a failed lookup")
+	}
+}
+
+func TestTrustIsCachedOnlyBriefly(t *testing.T) {
+	api := &fakeDirAPI{user: &slack.User{TeamID: "T1"}}
+	d, now := testDirectory(api)
+	ctx := context.Background()
+	d.isMember(ctx, "U1", "T1")
+	d.isMember(ctx, "U1", "T1")
+	if api.userCalls != 1 {
+		t.Fatalf("calls = %d, want 1 within the TTL", api.userCalls)
+	}
+
+	// Demoted to a guest: within trustTTL the old answer stands, and after it not.
+	api.mu.Lock()
+	api.user = &slack.User{TeamID: "T1", IsRestricted: true}
+	api.mu.Unlock()
+	*now = now.Add(trustTTL + time.Second)
+	if d.isMember(ctx, "U1", "T1") {
+		t.Fatal("a demoted user stayed a member past the TTL")
+	}
+}
+
+func TestEmptyIDIsNeverTrusted(t *testing.T) {
+	d, _ := testDirectory(&fakeDirAPI{user: &slack.User{TeamID: "T1"}})
+	if d.isMember(context.Background(), "", "T1") {
+		t.Fatal("an empty id counted as a member")
+	}
+}

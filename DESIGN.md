@@ -236,6 +236,22 @@ routes:
 unambiguous. Two agents in one place means two channels. As an escape hatch,
 `!runner <name>` on the first line of a new thread overrides the route for that thread.
 
+**Wildcard.** `channel: "*"` routes every channel with no route of its own; a named
+route wins regardless of order, and it never matches a DM. Naming a channel is a decision
+someone made about that channel, whereas a wildcard reaches channels nobody has looked at,
+so it is always members-only and that cannot be turned off. `members_only: true` applies
+the same check to any other route.
+
+The check is a surface capability (`AudienceVerifier`) that fails closed: a surface
+without it, a lookup that errors, and a missing scope are all refusals. It runs on every
+message of a gated thread, because continuing a thread needs no addressing and would
+otherwise let a guest reply their way into a member's conversation. It runs after the
+addressing check, so chatter costs no API calls. Answers are cached for five minutes in
+their own cache: the name cache keeps stale values through a failure on purpose, and a
+stale yes is how an outsider gets in. So a channel that becomes shared takes up to five
+minutes to be refused. Refusals are silent, since replying would be answering the people
+being kept out, and go to the audit log as `route.refused`.
+
 **Validation.** Reload fails atomically — never partially applies — on duplicate channel
 claims, unknown runner references, duplicate runner names, or a `host` that matches no
 registered instance. Configured-but-never-connected runners are surfaced prominently: a

@@ -226,6 +226,9 @@ startup; a runner with no enrollment secret is a warning, as at startup.`,
 				if r.DM {
 					target = "<direct messages>"
 				}
+				if r.Gated() {
+					target += " (members only)"
+				}
 				fmt.Printf("  %-20s -> %s\n", target, r.Runner)
 			}
 

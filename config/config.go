@@ -227,7 +227,25 @@ type Route struct {
 	// held to the same rules as a person, so it must still address the bot to
 	// start a conversation.
 	AllowBots []string `yaml:"allow_bots"`
+
+	// MembersOnly refuses anyone the surface cannot verify as a full member of
+	// this workspace, and, on a channel route, any channel it cannot verify as
+	// internal. Guests and people from other organizations are ignored. A
+	// wildcard route is always members-only.
+	MembersOnly bool `yaml:"members_only"`
 }
+
+// WildcardChannel as a route's channel matches every channel with no route of
+// its own. It never matches direct messages.
+const WildcardChannel = "*"
+
+// IsWildcard reports whether this route matches any otherwise unrouted channel.
+func (r Route) IsWildcard() bool { return r.Channel == WildcardChannel }
+
+// Gated reports whether messages on this route must pass the members-only
+// checks. A wildcard is gated unconditionally: a route that names a channel is a
+// decision someone made about that channel, and a wildcard is not.
+func (r Route) Gated() bool { return r.MembersOnly || r.IsWildcard() }
 
 // Marketplace is a plugin marketplace in a git repository on the forge.
 //
@@ -324,15 +342,31 @@ func (c *Config) BotAllowed(channel string, ids ...string) bool {
 }
 
 func (c *Config) RunnerFor(channel string, isDM bool) (string, bool) {
-	for _, r := range c.Routes {
-		if isDM && r.DM {
-			return r.Runner, true
-		}
-		if !isDM && r.Channel != "" && r.Channel == channel {
-			return r.Runner, true
+	r, ok := c.RouteFor(channel, isDM)
+	return r.Runner, ok
+}
+
+// RouteFor returns the route an inbound message falls under. A route naming the
+// channel beats a wildcard wherever each appears in the list.
+func (c *Config) RouteFor(channel string, isDM bool) (Route, bool) {
+	var wildcard *Route
+	for i := range c.Routes {
+		r := &c.Routes[i]
+		switch {
+		case isDM:
+			if r.DM {
+				return *r, true
+			}
+		case r.IsWildcard():
+			wildcard = r
+		case r.Channel != "" && r.Channel == channel:
+			return *r, true
 		}
 	}
-	return "", false
+	if wildcard != nil {
+		return *wildcard, true
+	}
+	return Route{}, false
 }
 
 // SplitPlugin splits "name@marketplace". ok is false for any other shape.

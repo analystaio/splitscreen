@@ -59,6 +59,38 @@ func newID(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(b[:])
 }
 
+// audienceAllowed applies a members-only route. Refusals are silent to the
+// sender, like an unrouted channel, and recorded in the audit log: replying would
+// be answering exactly the people this keeps out.
+func (g *Gateway) audienceAllowed(ctx context.Context, cfg *config.Config, in surface.Inbound) bool {
+	route, ok := cfg.RouteFor(in.Channel, in.IsDM)
+	if !ok || !route.Gated() {
+		return true
+	}
+	reason := ""
+	v, ok := g.surfaces[in.Surface].(surface.AudienceVerifier)
+	switch {
+	case !ok:
+		reason = "surface cannot verify membership"
+	case !v.SenderIsMember(ctx, in.User.ID):
+		reason = "sender is not a verified member"
+	case !in.IsDM && !v.ChannelIsInternal(ctx, in.Channel):
+		reason = "channel is not verifiably internal"
+	}
+	if reason == "" {
+		return true
+	}
+	g.log.Info("message refused by members-only route",
+		"channel", in.Channel, "user", in.User.ID, "reason", reason)
+	if err := g.store.Log(store.Event{
+		Kind: "route.refused", Runner: route.Runner, SurfaceUser: in.User.ID,
+		Detail: map[string]any{"channel": in.Channel, "reason": reason},
+	}); err != nil {
+		g.log.Error("audit write failed", "err", err)
+	}
+	return false
+}
+
 func threadKey(surfaceName, channel, thread string) string {
 	return surfaceName + ":" + channel + ":" + thread
 }
@@ -95,6 +127,13 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 	//
 	// A bare "!status" is addressing too: nobody types it at a colleague.
 	if isNew && !in.Addressed && cmd == "" {
+		return
+	}
+
+	// Checked here and not earlier so that chatter nobody aimed at the bot costs
+	// no API calls, and for continuing threads too: a guest must not be able to
+	// reply their way into a conversation a member started.
+	if !g.audienceAllowed(ctx, cfg, in) {
 		return
 	}
 

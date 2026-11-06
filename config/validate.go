@@ -257,6 +257,11 @@ func (c *Config) validateRoutes(p *problems) {
 		if r.DM && len(r.AllowBots) > 0 {
 			p.addf("route %d: allow_bots is only supported on channel routes", i)
 		}
+		if r.Gated() && len(r.AllowBots) > 0 {
+			// A bot is neither a member nor a guest, so the two rules contradict
+			// each other, and a bot let into every channel can loop in all of them.
+			p.addf("route %d: allow_bots needs a route that names its channel and is not members_only", i)
+		}
 		for _, b := range r.AllowBots {
 			if strings.TrimSpace(b) == "" {
 				p.addf("route %d: allow_bots has an empty entry", i)

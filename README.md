@@ -114,6 +114,22 @@ work with no inbound rules.
 Send a message in a routed channel. Unrouted channels are ignored entirely —
 this replaces the per-runner allowlists a single-process bridge needs.
 
+To make a runner available everywhere, route the wildcard:
+
+```yaml
+routes:
+  - { channel: "*", runner: staging }   # the quotes are required
+```
+
+It matches any channel with no route of its own, so a named route always wins.
+The bot still has to be in the channel, and a new thread still needs an
+`@`-mention. A wildcard is always members-only: guests, people from other
+organizations and shared channels are ignored, silently, for replies as well as
+new threads. Anything that cannot be verified counts as a no, and each refusal is
+recorded as `route.refused` in the audit log. Add `members_only: true` to any
+other route, a DM route included, for the same check. Group DMs need the
+`mpim:read` scope to verify, so without it they are refused.
+
 | Command | Effect |
 |---|---|
 | `!stop` | Stop the running turn (like Esc in a terminal) and drop messages queued behind it |
