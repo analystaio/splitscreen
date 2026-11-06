@@ -581,6 +581,15 @@ runner. Bundles declare; runners preflight on connect and report failures upward
 missing dependency reads as `review: mcp "postgres" declared, binary not found`
 rather than the agent silently lacking a tool.
 
+**Surface tools** are a third kind, `kind: surface`: tools the gateway implements
+itself on the chat surface, such as creating a channel. A proxied server needs a URL and
+its own credential, and a separate service here would be a second copy of the bot token
+to protect, for a tool that is one API call. To a runner a surface server is an ordinary
+proxied server, so it reaches the gateway through the same shim and audit table, and
+runners need no change. Surface tools check who asked themselves, on top of routing: a
+route that names a channel may admit guests on purpose, and that is not a reason to let
+them change the workspace. A runner can only call a surface server its bundle lists.
+
 ### 9.3 Third-party identity: three modes
 
 Using a human's personal credentials — the current state for Jira — means every action is

@@ -114,6 +114,22 @@ work with no inbound rules.
 Send a message in a routed channel. Unrouted channels are ignored entirely —
 this replaces the per-runner allowlists a single-process bridge needs.
 
+A bundle can give the agent tools the gateway runs itself on the chat surface:
+
+```yaml
+mcp:
+  chat: { kind: surface }
+bundles:
+  staging: { mcp: [chat] }
+```
+
+This adds `create_channel`, which takes a `name`, `private` and an `invite` list.
+It uses the gateway's own token, so the runner never sees one and needs no change.
+On Slack it needs the `channels:manage`, `groups:write`, `channels:write.invites`
+and `groups:write.invites` scopes. Only a verified full member can use it, the
+person who asked is always added, and every call is in the audit log. Nothing else
+is offered: no renaming, archiving or posting into the new channel.
+
 To make a runner available everywhere, route the wildcard:
 
 ```yaml

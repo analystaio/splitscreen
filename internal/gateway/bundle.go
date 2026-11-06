@@ -83,9 +83,11 @@ func (g *Gateway) buildBundle(runner string) (*protocol.BundlePush, error) {
 				srv.Command = s.Command
 				srv.Args = s.Args
 				srv.Env = s.Env
-			case config.MCPProxied:
+			case config.MCPProxied, config.MCPSurface:
 				// Proxied servers carry no command and no credential: the runner
-				// reaches them through the gateway, which holds the secret.
+				// reaches them through the gateway, which holds the secret. A
+				// surface server is the same thing to a runner, so runners need
+				// no change to use one.
 				srv.Kind = protocol.MCPProxied
 			}
 			push.MCP = append(push.MCP, srv)
