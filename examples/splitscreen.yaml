@@ -131,6 +131,11 @@ routes:
   # Other bots are ignored unless listed. Here a CI bot may hand work to review.
   # - { channel: C0987654321, runner: review, allow_bots: [B0123456789] }
   - { dm: true,             runner: staging }
+  # Refuse guests and people from other organizations. Works on any route.
+  # - { dm: true, runner: staging, members_only: true }
+  # Every channel with no route of its own, once the bot is invited. Always
+  # members-only and never in a shared channel, and the quotes are required.
+  # - { channel: "*", runner: staging }
 
 # ---------------------------------------------------------------------------
 

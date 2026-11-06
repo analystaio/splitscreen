@@ -2,6 +2,7 @@ package slackx
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +30,18 @@ type directory struct {
 	mu    sync.Mutex
 	users map[string]userEntry
 	chans map[string]chanEntry
+
+	// Trust decisions are kept apart from the name caches above, because they
+	// want the opposite failure mode: a stale name beats no name, but a stale
+	// yes is how an outsider gets in. See trusted.
+	trustTTL time.Duration
+	members  map[string]trustEntry
+	internal map[string]trustEntry
+}
+
+type trustEntry struct {
+	ok bool
+	at time.Time
 }
 
 type directoryAPI interface {
@@ -48,10 +61,16 @@ type chanEntry struct {
 	failed bool
 }
 
+// errNoAnswer is a lookup that returned neither a result nor an error.
+var errNoAnswer = errors.New("slack returned no result")
+
 const (
 	directoryTTL     = time.Hour
 	directoryFailTTL = 10 * time.Minute
 	directoryTimeout = 2 * time.Second
+	// trustTTL bounds how long a person who became a guest, or a channel that
+	// became shared, keeps its old standing.
+	trustTTL = 5 * time.Minute
 )
 
 func newDirectory(api directoryAPI) *directory {
@@ -60,6 +79,10 @@ func newDirectory(api directoryAPI) *directory {
 		now:   time.Now,
 		users: map[string]userEntry{},
 		chans: map[string]chanEntry{},
+
+		trustTTL: trustTTL,
+		members:  map[string]trustEntry{},
+		internal: map[string]trustEntry{},
 	}
 }
 
@@ -150,4 +173,71 @@ func (d *directory) rememberChannel(id, name string) {
 	d.mu.Lock()
 	d.chans[id] = chanEntry{name: name, at: d.now()}
 	d.mu.Unlock()
+}
+
+// trusted answers a yes/no question about id, caching definite answers briefly.
+// A lookup that fails is a no, is not cached, and leaves no earlier yes behind,
+// so an expired yes cannot outlive the ability to confirm it.
+func (d *directory) trusted(ctx context.Context, cache map[string]trustEntry, id string,
+	lookup func(context.Context) (bool, error)) bool {
+	if id == "" {
+		return false
+	}
+	d.mu.Lock()
+	e, ok := cache[id]
+	d.mu.Unlock()
+	if ok && d.now().Sub(e.at) < d.trustTTL {
+		return e.ok
+	}
+
+	cctx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
+	yes, err := lookup(cctx)
+	if err != nil {
+		d.mu.Lock()
+		delete(cache, id)
+		d.mu.Unlock()
+		return false
+	}
+	d.mu.Lock()
+	cache[id] = trustEntry{ok: yes, at: d.now()}
+	d.mu.Unlock()
+	return yes
+}
+
+// isMember reports that a user is a full member of team.
+func (d *directory) isMember(ctx context.Context, id, team string) bool {
+	return d.trusted(ctx, d.members, id, func(ctx context.Context) (bool, error) {
+		u, err := d.api.GetUserInfoContext(ctx, id)
+		if err != nil {
+			return false, err
+		}
+		if u == nil {
+			return false, errNoAnswer
+		}
+		return fullMember(u, team), nil
+	})
+}
+
+// fullMember is the rule itself. team must be known and match: Slack Connect
+// users can appear with no guest flags at all, and only their home team gives
+// them away.
+func fullMember(u *slack.User, team string) bool {
+	return team != "" && u.TeamID == team &&
+		!u.Deleted && !u.IsBot &&
+		!u.IsRestricted && !u.IsUltraRestricted && !u.IsStranger
+}
+
+// isInternal reports that a channel is shared with nobody.
+func (d *directory) isInternal(ctx context.Context, id string) bool {
+	return d.trusted(ctx, d.internal, id, func(ctx context.Context) (bool, error) {
+		ch, err := d.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{ChannelID: id})
+		if err != nil {
+			return false, err
+		}
+		if ch == nil {
+			return false, errNoAnswer
+		}
+		return !ch.IsShared && !ch.IsExtShared && !ch.IsOrgShared && !ch.IsPendingExtShared, nil
+	})
 }

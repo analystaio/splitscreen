@@ -219,6 +219,18 @@ func (s *Surface) enrich(ctx context.Context, in *surface.Inbound) {
 	}
 }
 
+var _ surface.AudienceVerifier = (*Surface)(nil)
+
+// SenderIsMember implements surface.AudienceVerifier.
+func (s *Surface) SenderIsMember(ctx context.Context, userID string) bool {
+	return s.dir != nil && s.dir.isMember(ctx, userID, s.teamID)
+}
+
+// ChannelIsInternal implements surface.AudienceVerifier.
+func (s *Surface) ChannelIsInternal(ctx context.Context, channelID string) bool {
+	return s.dir != nil && s.dir.isInternal(ctx, channelID)
+}
+
 func (s *Surface) inboundFile(f slack.File) surface.File {
 	// URLPrivateDownload needs the bot token, which lives here and nowhere else.
 	url := f.URLPrivateDownload

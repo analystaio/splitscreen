@@ -281,6 +281,21 @@ type ChannelInfo struct {
 	Detail string
 }
 
+// AudienceVerifier is implemented by a surface that can tell insiders from
+// outsiders. Routes marked members-only depend on it, and a surface without it
+// fails them closed.
+//
+// Both methods answer true only on positive proof. A failed lookup, a missing
+// scope or a timeout is false, and a past true is never reused after one.
+type AudienceVerifier interface {
+	// SenderIsMember reports that a user is a full member of this workspace:
+	// not a guest, not deactivated, and not from another organization.
+	SenderIsMember(ctx context.Context, userID string) bool
+	// ChannelIsInternal reports that a channel is not shared outside this
+	// workspace, nor pending an invitation to be.
+	ChannelIsInternal(ctx context.Context, channelID string) bool
+}
+
 // Surface is a chat platform adapter.
 type Surface interface {
 	// Name identifies the adapter ("slack"). Used in thread keys and audit rows.

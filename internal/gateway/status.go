@@ -95,14 +95,25 @@ func (g *Gateway) RoutesText() string {
 		b.WriteString("_none — every channel is ignored_\n")
 		return b.String()
 	}
+	wildcard := false
 	for _, r := range cfg.Routes {
 		target := "direct messages"
-		if !r.DM {
+		switch {
+		case r.IsWildcard():
+			target = "any channel the bot is in, except shared ones"
+			wildcard = true
+		case !r.DM:
 			target = g.channelLabel(r.Channel)
+		}
+		if r.Gated() {
+			target += " (members only)"
 		}
 		b.WriteString(fmt.Sprintf("• %s → `%s`\n", target, r.Runner))
 	}
-	b.WriteString("\n_Unlisted channels are ignored. A thread keeps its runner even after a route changes; use `!rebind`._\n")
+	if !wildcard {
+		b.WriteString("\n_Unlisted channels are ignored._")
+	}
+	b.WriteString("\n_A thread keeps its runner even after a route changes; use `!rebind`._\n")
 	return b.String()
 }
 

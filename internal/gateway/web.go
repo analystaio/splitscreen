@@ -102,6 +102,9 @@ func (g *Gateway) handleIndex(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		wc := webChannel{Label: rt.Channel}
+		if rt.IsWildcard() {
+			wc.Label = "any channel"
+		}
 		if st, ok := g.ChannelState(rt.Channel); ok {
 			if st.Info.Name != "" {
 				wc.Label = "#" + st.Info.Name
