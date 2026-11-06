@@ -221,6 +221,31 @@ func (s *Surface) enrich(ctx context.Context, in *surface.Inbound) {
 
 var _ surface.AudienceVerifier = (*Surface)(nil)
 
+var _ surface.ChannelCreator = (*Surface)(nil)
+
+// CreateChannel implements surface.ChannelCreator. The bot is a member of what it
+// creates, so a wildcard route covers the new channel with no invite.
+func (s *Surface) CreateChannel(ctx context.Context, req surface.ChannelRequest) (surface.CreatedChannel, error) {
+	ch, err := s.api.CreateConversationContext(ctx, slack.CreateConversationParams{
+		ChannelName: req.Name, IsPrivate: req.Private,
+	})
+	if err != nil {
+		return surface.CreatedChannel{}, fmt.Errorf("slack: create channel %q: %w", req.Name, err)
+	}
+	out := surface.CreatedChannel{ID: ch.ID, Name: ch.Name}
+	for _, user := range req.Invite {
+		// One at a time: a batch fails whole, and one bad id should not cost the
+		// person who asked their place in a private channel.
+		if _, err := s.api.InviteUsersToConversationContext(ctx, ch.ID, user); err != nil {
+			if out.InviteFailures == nil {
+				out.InviteFailures = map[string]string{}
+			}
+			out.InviteFailures[user] = err.Error()
+		}
+	}
+	return out, nil
+}
+
 // SenderIsMember implements surface.AudienceVerifier.
 func (s *Surface) SenderIsMember(ctx context.Context, userID string) bool {
 	return s.dir != nil && s.dir.isMember(ctx, userID, s.teamID)

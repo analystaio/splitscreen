@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/analystaio/splitscreen/config"
 	"github.com/analystaio/splitscreen/internal/forge"
 	"github.com/analystaio/splitscreen/internal/pricing"
 	"github.com/analystaio/splitscreen/internal/store"
@@ -477,13 +478,20 @@ func (g *Gateway) onMCPCall(ctx context.Context, c *Conn, fr *protocol.MCPCall) 
 		}
 	}
 
+	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	if s := g.cfg.Load().MCP[fr.Server]; s != nil && s.Kind == config.MCPSurface {
+		result, err := g.callSurfaceTool(callCtx, c.runner, turn, fr)
+		respond(result, err)
+		return
+	}
+
 	if !g.proxy.Has(fr.Server) {
 		respond(nil, fmt.Errorf("server %q is not proxied by this gateway", fr.Server))
 		return
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
 	result, err := g.proxy.Call(callCtx, fr.Server, fr.Tool, fr.Args)
 	respond(result, err)
 }

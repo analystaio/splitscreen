@@ -532,6 +532,17 @@ type MCPRecord struct {
 	DurationMS  int64
 }
 
+// MCPCall reads one audited call back.
+func (s *Store) MCPCall(callID string) (MCPRecord, error) {
+	var m MCPRecord
+	var ok int
+	err := s.db.QueryRow(
+		`SELECT call_id, runner, surface_user, server, tool, ok FROM mcp_calls WHERE call_id = ?`, callID,
+	).Scan(&m.CallID, &m.Runner, &m.SurfaceUser, &m.Server, &m.Tool, &ok)
+	m.OK = ok != 0
+	return m, err
+}
+
 func (s *Store) RecordMCPCall(m MCPRecord) error {
 	_, err := s.db.Exec(`
 		INSERT INTO mcp_calls (call_id, runner, thread_id, turn_id, surface_user, server, tool,

@@ -112,6 +112,10 @@ type MCPServer struct {
 const (
 	MCPLocal   = "local"
 	MCPProxied = "proxied"
+	// MCPSurface is a set of tools the gateway implements itself on the chat
+	// surface, with the credential it already holds. There is nothing to point
+	// at: no command, url or secret.
+	MCPSurface = "surface"
 )
 
 // Defaults for gateway settings that have a sensible one.
@@ -226,8 +230,12 @@ func (c *Config) validateMCP(p *problems) {
 			default:
 				p.addf("mcp %q: unknown auth %q", name, s.Auth)
 			}
+		case MCPSurface:
+			if s.Command != "" || s.URL != "" || s.Secret != "" {
+				p.addf("mcp %q: surface servers run inside the gateway and take no command, url or secret", name)
+			}
 		default:
-			p.addf("mcp %q: kind must be %q or %q, got %q", name, MCPLocal, MCPProxied, s.Kind)
+			p.addf("mcp %q: kind must be %q, %q or %q, got %q", name, MCPLocal, MCPProxied, MCPSurface, s.Kind)
 		}
 	}
 

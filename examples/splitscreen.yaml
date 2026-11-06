@@ -153,6 +153,9 @@ marketplaces:
 bundles:
   base:
     memory: [org/conventions.md]
+    # Tools the gateway runs on the chat surface, such as create_channel. Needs an
+    # entry under `mcp:` with `kind: surface`, and on Slack the channel scopes.
+    # mcp: [chat]
     skills: [org/deploy-check]
 
   staging:

@@ -711,3 +711,31 @@ func TestSecondWildcardIsRefused(t *testing.T) {
 		t.Fatal("two wildcards parsed")
 	}
 }
+
+func TestSurfaceMCPServerTakesNoCommandUrlOrSecret(t *testing.T) {
+	cfg := func(server string) string {
+		return `
+gateway: { listen: 127.0.0.1:8443 }
+runners:
+  a: { display: { name: A }, cwd: /tmp, harness: claude-code, bundle: b }
+bundles:
+  b: { mcp: [chat] }
+mcp:
+  chat: ` + server + `
+routes:
+  - { channel: C1, runner: a }
+`
+	}
+	if _, err := Parse([]byte(cfg(`{ kind: surface }`))); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		`{ kind: surface, url: https://x }`,
+		`{ kind: surface, command: /bin/x }`,
+		`{ kind: surface, secret: s }`,
+	} {
+		if _, err := Parse([]byte(cfg(bad))); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}

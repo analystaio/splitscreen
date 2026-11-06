@@ -296,6 +296,30 @@ type AudienceVerifier interface {
 	ChannelIsInternal(ctx context.Context, channelID string) bool
 }
 
+// ChannelRequest asks a surface for a new channel.
+type ChannelRequest struct {
+	Name    string
+	Private bool
+	// Invite lists users to add once the channel exists.
+	Invite []string
+}
+
+// CreatedChannel reports a channel that now exists.
+type CreatedChannel struct {
+	ID   string
+	Name string
+	// InviteFailures maps a user id to why it could not be added. The channel
+	// exists regardless, so these are never an error: a caller told it failed
+	// would retry and be refused for the name it just took.
+	InviteFailures map[string]string
+}
+
+// ChannelCreator is implemented by a surface that can create channels. An error
+// means no channel was created.
+type ChannelCreator interface {
+	CreateChannel(ctx context.Context, req ChannelRequest) (CreatedChannel, error)
+}
+
 // Surface is a chat platform adapter.
 type Surface interface {
 	// Name identifies the adapter ("slack"). Used in thread keys and audit rows.
