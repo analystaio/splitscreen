@@ -3,6 +3,7 @@ package slackx
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -246,5 +247,62 @@ func TestEmptyIDIsNeverTrusted(t *testing.T) {
 	d, _ := testDirectory(&fakeDirAPI{user: &slack.User{TeamID: "T1"}})
 	if d.isMember(context.Background(), "", "T1") {
 		t.Fatal("an empty id counted as a member")
+	}
+}
+
+func TestBroadcastsAreCaughtAfterRendering(t *testing.T) {
+	for _, s := range []string{
+		"<!channel>", "<!here>", "<!everyone>", "<!subteam^S1>", "<!here|here>",
+		"[x](!channel)", "[a](!here)", "[a](!subteam^S1)", "[x](<!channel>)", "hi <!channel> there",
+	} {
+		if !hasBroadcast(ToMrkdwn(s)) {
+			t.Errorf("%q got through", s)
+		}
+	}
+	for _, s := range []string{"hello", "<@U123>", "<#C123>", "[x](https://a.b)", "a < b ! c", "@channel"} {
+		if hasBroadcast(ToMrkdwn(s)) {
+			t.Errorf("%q was refused", s)
+		}
+	}
+}
+
+func TestMatchUsers(t *testing.T) {
+	mk := func(id, name string, mut func(*slack.User)) slack.User {
+		u := slack.User{ID: id, TeamID: "T1", Name: id}
+		u.Profile.RealName = name
+		u.Profile.Email = strings.ToLower(id) + "@example.com"
+		if mut != nil {
+			mut(&u)
+		}
+		return u
+	}
+	users := []slack.User{
+		mk("U1", "Barbara Ann", nil),
+		mk("U2", "Ann Lee", nil),
+		mk("U3", "Ann Gone", func(u *slack.User) { u.Deleted = true }),
+		mk("U4", "Ann Bot", func(u *slack.User) { u.IsBot = true }),
+		mk("U5", "Ann Guest", func(u *slack.User) { u.IsRestricted = true }),
+		mk("U6", "Ann Outside", func(u *slack.User) { u.TeamID = "T2" }),
+		mk("U7", "Ann Stranger", func(u *slack.User) { u.IsStranger = true }),
+		mk("USLACKBOT", "Ann Slackbot", nil),
+		mk("U8", "Roseanne", nil),
+	}
+	got := matchUsers(users, "T1", "ann", 10)
+	ids := make([]string, len(got))
+	for i, m := range got {
+		ids[i] = m.ID
+	}
+	// Word starts first, so "Ann" beats "Roseanne". Directory order within each.
+	if want := "U1,U2,U5,U8"; strings.Join(ids, ",") != want {
+		t.Fatalf("ids = %v, want %s", ids, want)
+	}
+	if !got[2].Guest {
+		t.Fatal("guest not flagged")
+	}
+	if n := len(matchUsers(users, "T1", "ann", 2)); n != 2 {
+		t.Fatalf("limit gave %d", n)
+	}
+	if got := matchUsers(users, "T1", "U2@EXAMPLE", 5); len(got) != 1 || got[0].ID != "U2" {
+		t.Fatalf("email match is case-insensitive: %+v", got)
 	}
 }

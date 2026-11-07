@@ -320,6 +320,59 @@ type ChannelCreator interface {
 	CreateChannel(ctx context.Context, req ChannelRequest) (CreatedChannel, error)
 }
 
+// UserMatch is a person found in the workspace directory.
+type UserMatch struct {
+	ID    string
+	Name  string
+	Title string
+	Guest bool
+}
+
+// ChannelRef names a channel.
+type ChannelRef struct {
+	ID   string
+	Name string
+}
+
+// HistoryRequest reads a channel, or one thread in it when Thread is set.
+type HistoryRequest struct {
+	Channel string
+	Thread  string
+	Limit   int
+}
+
+// ChannelMessage is one message read back from a channel.
+type ChannelMessage struct {
+	ID      string
+	Thread  string
+	User    string
+	Name    string
+	Text    string
+	Replies int
+	Bot     bool
+	Files   []string
+}
+
+// ErrBroadcast refuses a message that would notify a whole channel or group.
+var ErrBroadcast = errors.New("message would notify a whole channel or group")
+
+// Workspace is implemented by a surface that can look around the workspace and
+// post outside the current thread.
+type Workspace interface {
+	// FindUsers returns people matching query, deactivated accounts and bots
+	// excluded.
+	FindUsers(ctx context.Context, query string, limit int) ([]UserMatch, error)
+	// JoinedChannels lists the channels the bot is in.
+	JoinedChannels(ctx context.Context) ([]ChannelRef, error)
+	// IsChannelMember reports whether a user is in a channel.
+	IsChannelMember(ctx context.Context, channel, user string) (bool, error)
+	// PostToChannel posts a new message, refusing with ErrBroadcast anything
+	// that would notify everyone once rendered.
+	PostToChannel(ctx context.Context, channel, text string, persona Persona) (Ref, error)
+	// ChannelHistory returns messages oldest first, the newest Limit of them.
+	ChannelHistory(ctx context.Context, req HistoryRequest) ([]ChannelMessage, error)
+}
+
 // Surface is a chat platform adapter.
 type Surface interface {
 	// Name identifies the adapter ("slack"). Used in thread keys and audit rows.

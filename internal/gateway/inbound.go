@@ -43,6 +43,9 @@ type turnContext struct {
 
 	// stop is the turn's Stop control and whether anyone pressed it.
 	stop stopState
+
+	// posts counts post_message calls, which a turn may only make so many of.
+	posts atomic.Int32
 }
 
 func (t *turnContext) touch() { t.lastActivity.Store(time.Now().UnixNano()) }
