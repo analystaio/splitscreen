@@ -123,12 +123,18 @@ bundles:
   staging: { mcp: [chat] }
 ```
 
-This adds `create_channel`, which takes a `name`, `private` and an `invite` list.
-It uses the gateway's own token, so the runner never sees one and needs no change.
-On Slack it needs the `channels:manage`, `groups:write`, `channels:write.invites`
-and `groups:write.invites` scopes. Only a verified full member can use it, the
-person who asked is always added, and every call is in the audit log. Nothing else
-is offered: no renaming, archiving or posting into the new channel.
+| Tool | What it does | Limits |
+|---|---|---|
+| `create_channel` | Creates a channel and adds whoever asked | 20 extra invites per call |
+| `find_user` | Finds people by name or email, to get their id | 10 results |
+| `post_message` | Posts to a channel the bot is in, marked as posted for whoever asked | Whoever asked must be in it too. Never a shared channel, never `@channel`, `@here` or a user group. 5 per turn |
+| `read_channel_history` | Reads recent messages, or a thread | Only the channel the conversation is in, and never a DM or shared channel. 200 messages |
+
+They use the gateway's own token, so the runner never sees one and needs no change.
+Only a verified full member can use them, and every call is in the audit log.
+`create_channel` needs the Slack scopes `channels:manage`, `groups:write`,
+`channels:write.invites` and `groups:write.invites`. The others need only the
+scopes in the quick start. Renaming and archiving are not offered.
 
 To make a runner available everywhere, route the wildcard:
 

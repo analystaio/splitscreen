@@ -231,8 +231,13 @@ func TestToolListParses(t *testing.T) {
 	if err := json.Unmarshal(out, &listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 1 || listed.Tools[0].Name != createChannelTool || len(listed.Tools[0].InputSchema) == 0 {
+	if len(listed.Tools) == 0 || listed.Tools[0].Name != createChannelTool {
 		t.Fatalf("tools = %s", out)
+	}
+	for _, l := range listed.Tools {
+		if len(l.InputSchema) == 0 {
+			t.Errorf("%s has no schema", l.Name)
+		}
 	}
 }
 

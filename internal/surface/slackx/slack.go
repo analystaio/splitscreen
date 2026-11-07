@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,7 +26,12 @@ import (
 
 // Surface is the Slack adapter.
 type Surface struct {
-	api    *slack.Client
+	api *slack.Client
+
+	peopleMu   sync.Mutex
+	peopleList []slack.User
+	peopleAt   time.Time
+
 	sock   *socketmode.Client
 	botID  string
 	selfID string
@@ -221,7 +227,189 @@ func (s *Surface) enrich(ctx context.Context, in *surface.Inbound) {
 
 var _ surface.AudienceVerifier = (*Surface)(nil)
 
-var _ surface.ChannelCreator = (*Surface)(nil)
+var (
+	_ surface.ChannelCreator = (*Surface)(nil)
+	_ surface.Workspace      = (*Surface)(nil)
+)
+
+// PostToChannel implements surface.Workspace. The check runs on the rendered
+// text, because rendering is what can create a broadcast: the markdown link
+// [x](!channel) becomes <!channel|x>, which notifies everyone.
+func (s *Surface) PostToChannel(ctx context.Context, channel, text string, persona surface.Persona) (surface.Ref, error) {
+	rendered := ToMrkdwn(text)
+	if hasBroadcast(rendered) {
+		return surface.Ref{}, surface.ErrBroadcast
+	}
+	opts := append([]slack.MsgOption{slack.MsgOptionText(rendered, false)}, personaOptions(persona)...)
+	ch, ts, err := s.api.PostMessageContext(ctx, channel, opts...)
+	if err != nil {
+		return surface.Ref{}, fmt.Errorf("slack: post: %w", err)
+	}
+	return surface.Ref{Channel: ch, ID: ts}, nil
+}
+
+// hasBroadcast reports special mention syntax: <!channel>, <!here>, <!everyone>
+// and <!subteam^…>. Every one starts <!, so this needs no list to keep current,
+// at the cost of refusing the same text inside a code block.
+func hasBroadcast(rendered string) bool { return strings.Contains(rendered, "<!") }
+
+// JoinedChannels implements surface.Workspace.
+func (s *Surface) JoinedChannels(ctx context.Context) ([]surface.ChannelRef, error) {
+	var out []surface.ChannelRef
+	cursor := ""
+	for {
+		chs, next, err := s.api.GetConversationsForUserContext(ctx, &slack.GetConversationsForUserParameters{
+			Types: []string{"public_channel", "private_channel"}, ExcludeArchived: true,
+			Limit: 200, Cursor: cursor,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("slack: list channels: %w", err)
+		}
+		for _, c := range chs {
+			out = append(out, surface.ChannelRef{ID: c.ID, Name: c.Name})
+		}
+		if next == "" {
+			return out, nil
+		}
+		cursor = next
+	}
+}
+
+// IsChannelMember implements surface.Workspace.
+func (s *Surface) IsChannelMember(ctx context.Context, channel, user string) (bool, error) {
+	cursor := ""
+	for {
+		ids, next, err := s.api.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+			ChannelID: channel, Limit: 1000, Cursor: cursor,
+		})
+		if err != nil {
+			return false, fmt.Errorf("slack: list members: %w", err)
+		}
+		if slices.Contains(ids, user) {
+			return true, nil
+		}
+		if next == "" {
+			return false, nil
+		}
+		cursor = next
+	}
+}
+
+// FindUsers implements surface.Workspace. users.list is heavily rate limited and
+// returns everyone, so the list is shared briefly between lookups.
+func (s *Surface) FindUsers(ctx context.Context, query string, limit int) ([]surface.UserMatch, error) {
+	users, err := s.people(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return matchUsers(users, s.teamID, query, limit), nil
+}
+
+const peopleTTL = 5 * time.Minute
+
+func (s *Surface) people(ctx context.Context) ([]slack.User, error) {
+	s.peopleMu.Lock()
+	defer s.peopleMu.Unlock()
+	if s.peopleList != nil && time.Since(s.peopleAt) < peopleTTL {
+		return s.peopleList, nil
+	}
+	users, err := s.api.GetUsersContext(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("slack: list users: %w", err)
+	}
+	s.peopleList, s.peopleAt = users, time.Now()
+	return users, nil
+}
+
+// matchUsers filters a directory: real people on this team only, those whose
+// name matches at the start of a word first.
+func matchUsers(users []slack.User, team, query string, limit int) []surface.UserMatch {
+	q := strings.ToLower(query)
+	var starts, within []surface.UserMatch
+	for i := range users {
+		u := &users[i]
+		if u.Deleted || u.IsBot || u.ID == "USLACKBOT" || u.IsStranger || (team != "" && u.TeamID != team) {
+			continue
+		}
+		fields := strings.ToLower(strings.Join([]string{
+			u.Profile.DisplayName, u.Profile.RealName, u.RealName, u.Name, u.Profile.Email,
+		}, " "))
+		if !strings.Contains(fields, q) {
+			continue
+		}
+		m := surface.UserMatch{
+			ID: u.ID, Name: userDisplay(u), Title: u.Profile.Title,
+			Guest: u.IsRestricted || u.IsUltraRestricted,
+		}
+		if strings.HasPrefix(fields, q) || strings.Contains(fields, " "+q) {
+			starts = append(starts, m)
+		} else {
+			within = append(within, m)
+		}
+	}
+	out := append(starts, within...)
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// maxHistoryPages bounds a long thread: replies arrive oldest first, so reaching
+// the newest means paging through it.
+const maxHistoryPages = 5
+
+// ChannelHistory implements surface.Workspace.
+func (s *Surface) ChannelHistory(ctx context.Context, req surface.HistoryRequest) ([]surface.ChannelMessage, error) {
+	var msgs []slack.Message
+	if req.Thread != "" {
+		cursor := ""
+		for page := 0; page < maxHistoryPages; page++ {
+			batch, more, next, err := s.api.GetConversationRepliesContext(ctx, &slack.GetConversationRepliesParameters{
+				ChannelID: req.Channel, Timestamp: req.Thread, Limit: 200, Cursor: cursor,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("slack: read thread: %w", err)
+			}
+			msgs = append(msgs, batch...)
+			if !more || next == "" {
+				break
+			}
+			cursor = next
+		}
+		if len(msgs) > req.Limit {
+			msgs = msgs[len(msgs)-req.Limit:]
+		}
+	} else {
+		resp, err := s.api.GetConversationHistoryContext(ctx, &slack.GetConversationHistoryParameters{
+			ChannelID: req.Channel, Limit: req.Limit,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("slack: read history: %w", err)
+		}
+		msgs = resp.Messages
+		slices.Reverse(msgs) // newest first from Slack
+	}
+
+	out := make([]surface.ChannelMessage, 0, len(msgs))
+	for i := range msgs {
+		m := &msgs[i]
+		cm := surface.ChannelMessage{
+			ID: m.Timestamp, Thread: m.ThreadTimestamp, User: m.User, Text: m.Text,
+			Replies: m.ReplyCount, Bot: m.BotID != "",
+		}
+		if s.dir != nil && m.User != "" {
+			cm.Name, _ = s.dir.user(ctx, m.User)
+		}
+		if cm.Name == "" {
+			cm.Name = m.Username
+		}
+		for _, f := range m.Files {
+			cm.Files = append(cm.Files, f.Name)
+		}
+		out = append(out, cm)
+	}
+	return out, nil
+}
 
 // CreateChannel implements surface.ChannelCreator. The bot is a member of what it
 // creates, so a wildcard route covers the new channel with no invite.

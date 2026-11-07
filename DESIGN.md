@@ -590,6 +590,17 @@ runners need no change. Surface tools check who asked themselves, on top of rout
 route that names a channel may admit guests on purpose, and that is not a reason to let
 them change the workspace. A runner can only call a surface server its bundle lists.
 
+Reading and posting carry a confused-deputy risk that creating does not: the bot can be
+in private channels the person asking is not, and must not become their way in. So
+`read_channel_history` takes no channel argument and reads only the channel the turn is
+in, whose audience already has the content and is the audience for the answer, and
+`post_message` requires the person asking to be a member of the target. History is framed
+as data in the result because anyone who can post in a channel can write into it.
+
+The broadcast check runs in the surface, on rendered text. Rendering is what can create a
+broadcast: the markdown link `[x](!channel)` becomes `<!channel|x>`, which a check on the
+agent's own text would miss.
+
 ### 9.3 Third-party identity: three modes
 
 Using a human's personal credentials — the current state for Jira — means every action is
