@@ -31,7 +31,7 @@ var (
 	userIDRe      = regexp.MustCompile(`^[UW][A-Z0-9]{2,}$`)
 )
 
-const surfaceToolList = `{"tools":[{
+const createChannelToolDef = `{
   "name":"create_channel",
   "description":"Create a chat channel. The person who asked is added automatically, and the bot joins it. Channels cannot be renamed or archived with this tool, so only create one when someone asked for it.",
   "inputSchema":{"type":"object","required":["name"],"additionalProperties":false,"properties":{
@@ -39,7 +39,15 @@ const surfaceToolList = `{"tools":[{
     "private":{"type":"boolean","description":"Only invited people can see it. Defaults to false."},
     "invite":{"type":"array","maxItems":20,"items":{"type":"string"},"description":"User ids to add as well as the person who asked."}
   }}
-}]}`
+}`
+
+// surfaceToolList is the tools/list answer: every surface tool, deny rules
+// included. Discovery is never filtered, as for proxied servers: a refused
+// call explains itself, a missing tool does not.
+func (g *Gateway) surfaceToolList() json.RawMessage {
+	return json.RawMessage(`{"tools":[` + createChannelToolDef + `,` +
+		scheduleToolDefs(g.cfg.Load().Gateway.Timezone) + `]}`)
+}
 
 type createChannelArgs struct {
 	Name    string   `json:"name"`
@@ -52,11 +60,28 @@ func (g *Gateway) callSurfaceTool(ctx context.Context, runner string, turn *turn
 	if !g.runnerHasServer(runner, fr.Server) {
 		return nil, fmt.Errorf("server %q is not in this runner's bundle", fr.Server)
 	}
+	if fr.Tool != mcpproxy.ListTool {
+		if s := g.cfg.Load().MCP[fr.Server]; s != nil {
+			for _, rule := range s.Deny {
+				if mcpproxy.MatchTool(rule, fr.Tool) {
+					return nil, fmt.Errorf("tool %q on %q is denied by gateway policy", fr.Tool, fr.Server)
+				}
+			}
+		}
+	}
 	switch fr.Tool {
 	case mcpproxy.ListTool:
-		return json.RawMessage(surfaceToolList), nil
+		return g.surfaceToolList(), nil
 	case createChannelTool:
 		return g.createChannel(ctx, runner, turn, fr.Args)
+	case scheduleCreateTool:
+		return g.scheduleCreate(ctx, runner, turn, fr.Args)
+	case scheduleListTool:
+		return g.scheduleList(ctx, runner, turn)
+	case scheduleUpdateTool:
+		return g.scheduleUpdate(ctx, runner, turn, fr.Args)
+	case scheduleDeleteTool:
+		return g.scheduleDelete(ctx, runner, turn, fr.Args)
 	}
 	return nil, fmt.Errorf("unknown tool %q on server %q", fr.Tool, fr.Server)
 }

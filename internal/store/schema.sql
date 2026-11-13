@@ -170,3 +170,35 @@ CREATE TABLE IF NOT EXISTS rate_limits (
     at           TEXT NOT NULL,
     PRIMARY KEY (account, limit_window)
 );
+
+-- A prompt run on a cron schedule. Created by an agent tool on someone's
+-- behalf, but inert ('pending') until that person confirms it on the card the
+-- gateway posts: an agent that misread a message must not be able to start
+-- recurring unattended work.
+CREATE TABLE IF NOT EXISTS schedules (
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL,
+    surface         TEXT NOT NULL,
+    channel         TEXT NOT NULL,
+    -- The thread it was created in. Its card lives there, and in 'thread' mode
+    -- every run happens there too.
+    thread          TEXT NOT NULL,
+    is_dm           INTEGER NOT NULL DEFAULT 0,
+    mode            TEXT NOT NULL,          -- 'channel' (new thread per run) or 'thread'
+    runner          TEXT NOT NULL,
+    creator         TEXT NOT NULL,          -- surface user id; runs act as them
+    creator_display TEXT NOT NULL DEFAULT '',
+    cron            TEXT NOT NULL,
+    timezone        TEXT NOT NULL,
+    prompt          TEXT NOT NULL,
+    state           TEXT NOT NULL,          -- pending | active | paused
+    card_id         TEXT NOT NULL DEFAULT '',
+    next_run_at     TEXT,
+    last_run_at     TEXT,
+    last_result     TEXT NOT NULL DEFAULT '',
+    failures        INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(state, next_run_at);
+CREATE INDEX IF NOT EXISTS idx_schedules_creator ON schedules(creator);

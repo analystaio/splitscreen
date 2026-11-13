@@ -457,3 +457,60 @@ func TestAgentSessionStoppedBecomesAStop(t *testing.T) {
 		t.Fatalf("stop = %+v", st)
 	}
 }
+
+type controlRecorder struct {
+	recordingHandler
+	controls []surface.Control
+}
+
+func (h *controlRecorder) OnControl(_ context.Context, c surface.Control) {
+	h.controls = append(h.controls, c)
+}
+
+func TestControlButtonRoundTrips(t *testing.T) {
+	blocks := controlBlocks(surface.ControlMessage{
+		Text: "**card**",
+		Buttons: []surface.Button{
+			{Label: "Confirm", Action: "sched_confirm", Value: "sch_1", Style: surface.ButtonPrimary},
+			{Label: "Cancel", Action: "sched_cancel", Value: "sch_1", Style: surface.ButtonDanger},
+		},
+	})
+	if len(blocks) != 2 {
+		t.Fatalf("blocks = %d", len(blocks))
+	}
+	actions := blocks[1].(*slack.ActionBlock).Elements.ElementSet
+	first := actions[0].(*slack.ButtonBlockElement)
+	if first.ActionID != controlAction+"sched_confirm" || first.Value != "sch_1" || first.Style != slack.StylePrimary {
+		t.Fatalf("button = %+v", first)
+	}
+	if text := blocks[0].(*slack.SectionBlock).Text.Text; text != "*card*" {
+		t.Errorf("card text not converted to mrkdwn: %q", text)
+	}
+
+	s := &Surface{}
+	h := &controlRecorder{}
+	s.handleInteraction(context.Background(), h, slack.InteractionCallback{
+		Type: slack.InteractionTypeBlockActions,
+		User: slack.User{ID: "U9", Name: "alice"},
+		Channel: slack.Channel{GroupConversation: slack.GroupConversation{
+			Conversation: slack.Conversation{ID: "C1"},
+		}},
+		Message: slack.Message{Msg: slack.Msg{Timestamp: "card1", ThreadTimestamp: "T1"}},
+		ActionCallback: slack.ActionCallbacks{
+			BlockActions: []*slack.BlockAction{{ActionID: first.ActionID, Value: first.Value}},
+		},
+	})
+	if len(h.controls) != 1 {
+		t.Fatalf("controls = %d", len(h.controls))
+	}
+	c := h.controls[0]
+	if c.Action != "sched_confirm" || c.Value != "sch_1" || c.User.ID != "U9" || c.Ref.ID != "card1" || c.Ref.Channel != "C1" {
+		t.Fatalf("control = %+v", c)
+	}
+
+	// A handler without OnControl ignores the press rather than panicking.
+	s.handleInteraction(context.Background(), &recordingHandler{}, slack.InteractionCallback{
+		Type:           slack.InteractionTypeBlockActions,
+		ActionCallback: slack.ActionCallbacks{BlockActions: []*slack.BlockAction{{ActionID: first.ActionID}}},
+	})
+}

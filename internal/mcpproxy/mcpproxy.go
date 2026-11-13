@@ -222,6 +222,10 @@ func extractSSEData(raw []byte) []byte {
 	return last
 }
 
+// MatchTool reports whether a deny rule covers a tool, for servers the gateway
+// runs itself.
+func MatchTool(rule, tool string) bool { return matchTool(rule, tool) }
+
 // matchTool supports an exact name or a trailing wildcard.
 func matchTool(rule, tool string) bool {
 	if prefix, ok := strings.CutSuffix(rule, "*"); ok {

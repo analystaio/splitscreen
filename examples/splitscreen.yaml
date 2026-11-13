@@ -51,6 +51,7 @@ gateway:
   heartbeat: 20s
   queue_limit: 100
   secret_expiry_warning: 336h        # warn 14 days before a token expires
+  timezone: America/Los_Angeles      # schedules use this unless the request names a zone
 
 # ---------------------------------------------------------------------------
 
@@ -153,8 +154,9 @@ marketplaces:
 bundles:
   base:
     memory: [org/conventions.md]
-    # Tools the gateway runs on the chat surface, such as create_channel. Needs an
-    # entry under `mcp:` with `kind: surface`, and on Slack the channel scopes.
+    # Tools the gateway runs on the chat surface: create_channel and the schedule_*
+    # tools. Needs an entry under `mcp:` with `kind: surface`, and on Slack the
+    # channel scopes for create_channel.
     # mcp: [chat]
     skills: [org/deploy-check]
 

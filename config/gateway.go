@@ -3,6 +3,9 @@ package config
 import (
 	"path/filepath"
 	"strings"
+	"time"
+	// Schedules name IANA zones, and a minimal host may have no zoneinfo.
+	_ "time/tzdata"
 )
 
 // Gateway holds settings for the control plane itself.
@@ -44,6 +47,10 @@ type Gateway struct {
 	// SecretExpiryWarning is how far ahead to warn about expiring credentials,
 	// so a mandatory rotation is a calendar item rather than an outage.
 	SecretExpiryWarning Duration `yaml:"secret_expiry_warning"`
+
+	// Timezone is the IANA zone a schedule runs in when whoever asked for it
+	// did not name one. Defaults to UTC.
+	Timezone string `yaml:"timezone"`
 }
 
 type TLS struct {
@@ -127,6 +134,7 @@ const (
 	DefaultQueueLimit          = 100 // messages per runner
 	DefaultExpiryWarningHours  = 14 * 24
 	DefaultPermissionTimeoutMS = 15 * 60 * 1000
+	DefaultTimezone            = "UTC"
 )
 
 func (c *Config) applyGatewayDefaults() {
@@ -148,6 +156,9 @@ func (c *Config) applyGatewayDefaults() {
 	}
 	if g.SecretExpiryWarning == 0 {
 		g.SecretExpiryWarning = Duration(DefaultExpiryWarningHours) * Duration(3_600_000_000_000)
+	}
+	if g.Timezone == "" {
+		g.Timezone = DefaultTimezone
 	}
 	if g.Forge.Kind == "" && (g.Forge.AppID != "" || g.Forge.KeyFile != "") {
 		g.Forge.Kind = ForgeGitHubApp
@@ -176,6 +187,9 @@ func (c *Config) validateGateway(p *problems) {
 	}
 	if g.QueueLimit < 0 {
 		p.addf("gateway.queue_limit must not be negative")
+	}
+	if _, err := time.LoadLocation(g.Timezone); err != nil || g.Timezone == "Local" {
+		p.addf("gateway.timezone %q is not an IANA time zone name", g.Timezone)
 	}
 
 	switch g.Forge.Kind {

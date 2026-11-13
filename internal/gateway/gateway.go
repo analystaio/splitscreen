@@ -73,6 +73,8 @@ type Gateway struct {
 
 	working *workingTracker
 
+	sched scheduleState
+
 	waker          wake.Starter
 	wakeMu         sync.Mutex
 	wakes          map[string]*wakeState
@@ -162,6 +164,7 @@ func New(o Options) (*Gateway, error) {
 		wakeRetryFor:   defaultWakeRetryFor,
 	}
 	g.channels.byID = map[string]channelState{}
+	g.sched.lastRun = map[string]string{}
 	go g.runWorking()
 	if g.surfaces == nil {
 		g.surfaces = map[string]surface.Surface{}
@@ -335,6 +338,9 @@ func (g *Gateway) Run(ctx context.Context) error {
 	} else if n > 0 {
 		g.log.Info("closed out turns left running by a previous gateway", "count", n)
 	}
+	if _, err := g.store.SettleInterruptedRuns("interrupted: the gateway restarted mid-run"); err != nil {
+		g.log.Error("settling interrupted scheduled runs failed", "err", err)
+	}
 
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(g.surfaces)+1)
@@ -366,6 +372,12 @@ func (g *Gateway) Run(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		g.tickWorking(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		g.runSchedules(ctx)
 	}()
 
 	wg.Add(1)

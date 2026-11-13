@@ -371,6 +371,7 @@ func (g *Gateway) failTurns(runner string, before time.Time, reason, notice stri
 		}
 		_ = g.store.FinishTurn(turn.TurnID, store.TurnError, reason,
 			time.Since(turn.StartedAt).Milliseconds(), 0)
+		g.scheduleTurnEnded(ctx, turn, store.TurnError, reason)
 		if srf, ok := g.surfaceFor(turn.Surface); ok {
 			_, _ = srf.Post(ctx, surface.Post{
 				Channel: turn.Channel, Thread: turn.Thread, Persona: turn.Persona, Text: notice,
@@ -429,6 +430,7 @@ func (g *Gateway) sweepStrandedOnce(ctx context.Context, timeout time.Duration) 
 		_ = g.store.FinishTurn(turn.TurnID, store.TurnError,
 			"stranded: no activity past timeout (Done lost or misattributed)",
 			time.Since(turn.StartedAt).Milliseconds(), 0)
+		g.scheduleTurnEnded(ctx, turn, store.TurnError, "stranded: no activity past timeout")
 		g.clearWorking(turn.ThreadID)
 		g.settleStop(ctx, turn, false, false)
 		g.turnSlotFreed(ctx, turn.Runner)
@@ -677,6 +679,7 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 	if err := g.store.FinishTurn(fr.TurnID, status, "", duration, fr.NumToolCalls); err != nil {
 		g.log.Error("finish turn failed", "turn", fr.TurnID, "err", err)
 	}
+	g.scheduleTurnEnded(ctx, turn, status, "")
 	_ = g.store.TouchThread(turn.ThreadID)
 	g.clearWorking(turn.ThreadID)
 	g.settleStop(ctx, turn, fr.Interrupted, noted)
@@ -703,6 +706,7 @@ func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error
 		}
 		_ = g.store.FinishTurn(fr.TurnID, store.TurnError, fr.Code+": "+fr.Message,
 			time.Since(turn.StartedAt).Milliseconds(), 0)
+		g.scheduleTurnEnded(ctx, turn, store.TurnError, fr.Code+": "+fr.Message)
 		g.turns.Delete(fr.TurnID)
 		g.clearWorking(turn.ThreadID)
 		g.settleStop(ctx, turn, false, false)
