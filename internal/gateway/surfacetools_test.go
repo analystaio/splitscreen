@@ -231,8 +231,14 @@ func TestToolListParses(t *testing.T) {
 	if err := json.Unmarshal(out, &listed); err != nil {
 		t.Fatal(err)
 	}
-	if len(listed.Tools) != 1 || listed.Tools[0].Name != createChannelTool || len(listed.Tools[0].InputSchema) == 0 {
+	want := []string{createChannelTool, scheduleCreateTool, scheduleListTool, scheduleUpdateTool, scheduleDeleteTool}
+	if len(listed.Tools) != len(want) {
 		t.Fatalf("tools = %s", out)
+	}
+	for i, tool := range listed.Tools {
+		if tool.Name != want[i] || len(tool.InputSchema) == 0 {
+			t.Fatalf("tool %d = %s, want %s with a schema", i, tool.Name, want[i])
+		}
 	}
 }
 

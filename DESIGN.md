@@ -469,6 +469,36 @@ channel of their own — the gate degrades to the old assumption rather than to 
 
 ---
 
+### 7.3 Schedules
+
+A schedule is a prompt run on a cron expression, created from chat. It is a surface
+tool (§9.2) because everything it needs is already the gateway's: the clock, the store,
+the chat token, and the dispatch path.
+
+**A run is a message nobody typed.** At the scheduled minute the gateway builds an
+`Inbound` on the creator's behalf and sends it through thread serialization, the
+runner's concurrency cap, the offline queue and wake, exactly as if they had typed it.
+Runners need no change, and scheduled work gets every guarantee interactive work has.
+The creator must still pass the channel's route when it fires: a person removed from
+the workspace does not keep a bot working for them.
+
+**The agent proposes; a person confirms.** `schedule_create` writes a `pending` row and
+the gateway posts a card showing the next run times it computed itself, so the times a
+person agrees to cannot be hallucinated. Only the creator's Confirm press makes it
+active. An agent that misread a message can therefore at most leave a proposal, and a
+scheduled run cannot call the schedule tools at all, so a schedule cannot reproduce or
+undo what a person set. Editing what or when sends it back to pending.
+
+**Firing is at-most-once per slot.** The next run is advanced before the run is
+dispatched and computed from now, not from the missed slot: a crash mid-fire skips a run
+rather than repeating it, and a gateway down for a week fires each schedule once on its
+return. A run still going (or still queued for an offline runner) makes the next firing
+skip. Three failures in a row pause the schedule with a note in its thread, so a broken
+schedule stops spending.
+
+Cron is the five-field Vixie dialect only, evaluated on the wall clock of the schedule's
+IANA zone: a time skipped by daylight saving is skipped, a repeated one fires once.
+
 ## 8. Permissions and policy
 
 Harnesses are driven with a **permission-prompt tool** — an MCP server hosted by the

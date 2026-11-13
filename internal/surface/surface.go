@@ -57,6 +57,9 @@ type Inbound struct {
 	// gateway drops such messages unless the channel's route allows the bot by
 	// BotID or by User.ID. Surfaces without bots leave it empty.
 	BotID string
+	// ScheduleID marks a message the gateway made itself for a scheduled run,
+	// on behalf of the schedule's creator. Surfaces never set it.
+	ScheduleID string
 }
 
 // File is an attachment on an inbound message. Open is called at most once and
@@ -318,6 +321,59 @@ type CreatedChannel struct {
 // means no channel was created.
 type ChannelCreator interface {
 	CreateChannel(ctx context.Context, req ChannelRequest) (CreatedChannel, error)
+}
+
+// Button is one control on a Controls message. Action says what pressing it
+// means and Value which thing it acts on; both come back verbatim in a Control.
+type Button struct {
+	Label  string
+	Action string
+	Value  string
+	Style  ButtonStyle
+}
+
+// ButtonStyle is a hint; a surface without styles ignores it.
+type ButtonStyle string
+
+const (
+	ButtonDefault ButtonStyle = ""
+	ButtonPrimary ButtonStyle = "primary"
+	ButtonDanger  ButtonStyle = "danger"
+)
+
+// ControlMessage is a message carrying buttons, such as a schedule's card.
+// An empty Buttons list renders the text alone, which is how a card is retired.
+type ControlMessage struct {
+	Channel string
+	Thread  string
+	Persona Persona
+	Text    string
+	Buttons []Button
+}
+
+// Controls is implemented by surfaces that can post messages with buttons and
+// edit them later. Optional: without it, features that need a person to press
+// something (confirming a schedule) say they are unavailable.
+type Controls interface {
+	PostControls(ctx context.Context, m ControlMessage) (Ref, error)
+	UpdateControls(ctx context.Context, ref Ref, m ControlMessage) error
+}
+
+// Control is a press of a Button.
+type Control struct {
+	Surface string
+	Action  string
+	Value   string
+	User    User
+	// Ref is the pressed message, so it can be updated in place.
+	Ref Ref
+}
+
+// ControlHandler receives button presses. A gateway implements it alongside
+// Handler; surfaces check for it rather than requiring it, so Handler stays
+// small.
+type ControlHandler interface {
+	OnControl(context.Context, Control)
 }
 
 // Surface is a chat platform adapter.

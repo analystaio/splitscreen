@@ -130,6 +130,36 @@ and `groups:write.invites` scopes. Only a verified full member can use it, the
 person who asked is always added, and every call is in the audit log. Nothing else
 is offered: no renaming, archiving or posting into the new channel.
 
+The same server adds **schedules**: a prompt run on a cron expression. Ask in
+plain language ("every weekday at 9am, list PRs open more than three days in
+acme/widgets") and the agent calls `schedule_create`. That only proposes it: the
+gateway posts a card in the thread with the next three run times, and nothing runs
+until the person who asked presses **Confirm**. The card stays as the schedule's
+controls (Pause / Resume, Run now, Delete), and `!schedules` lists the ones in a
+channel plus your own. `schedule_list`, `schedule_update` and `schedule_delete`
+let the agent manage them too; changing what or when sends a schedule back for
+confirmation.
+
+A run is a message the gateway sends on the creator's behalf, so it goes through
+the same queue, concurrency cap and wake as a typed one. By default each run starts
+a new thread in the channel on a fresh session; `post_to: thread` keeps every run in
+the thread it was created in, continuing that conversation. Limits: 10 schedules per
+person, at most one run every 15 minutes, a run that is still going makes the next
+one skip, missed runs (a gateway that was down) fire once rather than catching up,
+and three failed runs in a row pause the schedule and say so in its thread. Only a
+verified full member can create one; only its creator, or one of the runner's
+approvers, can change it. Runs happen with nobody watching, so a runner that asks
+for permission prompts will leave them waiting in the run's thread.
+
+Cron is the standard five fields, read in `gateway.timezone` (an IANA name,
+default UTC) unless the request names a zone. To offer channel creation but not
+schedules, or the reverse, deny tools on the server:
+
+```yaml
+mcp:
+  chat: { kind: surface, deny: ["schedule_*"] }
+```
+
 To make a runner available everywhere, route the wildcard:
 
 ```yaml

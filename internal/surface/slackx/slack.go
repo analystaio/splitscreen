@@ -286,6 +286,22 @@ func (s *Surface) handleInteraction(ctx context.Context, h surface.Handler, cb s
 		return
 	}
 	for _, a := range cb.ActionCallback.BlockActions {
+		if action, ok := strings.CutPrefix(a.ActionID, controlAction); ok {
+			if ch, ok := h.(surface.ControlHandler); ok {
+				ch.OnControl(ctx, surface.Control{
+					Surface: s.Name(),
+					Action:  action,
+					Value:   a.Value,
+					User:    surface.User{ID: cb.User.ID, Display: cb.User.Name},
+					Ref: surface.Ref{
+						Channel: cb.Channel.ID,
+						Thread:  cb.Message.ThreadTimestamp,
+						ID:      cb.Message.Timestamp,
+					},
+				})
+			}
+			continue
+		}
 		if a.ActionID == stopAction {
 			h.OnStop(ctx, surface.StopRequest{
 				Surface: s.Name(),
@@ -446,6 +462,65 @@ func (s *Surface) PostStop(ctx context.Context, c surface.StopControl) (surface.
 		return surface.Ref{}, fmt.Errorf("slack: post stop control: %w", err)
 	}
 	return surface.Ref{Channel: channel, Thread: c.Thread, ID: ts}, nil
+}
+
+// controlAction prefixes the action_id of every generic control button; the
+// rest of the id is the Button's Action.
+const controlAction = "splitscreen_ctl_"
+
+var _ surface.Controls = (*Surface)(nil)
+
+func controlBlocks(m surface.ControlMessage) []slack.Block {
+	text := ToMrkdwn(m.Text)
+	blocks := []slack.Block{
+		slack.NewSectionBlock(slack.NewTextBlockObject(slack.MarkdownType, truncate(text, 2900), false, false), nil, nil),
+	}
+	if len(m.Buttons) == 0 {
+		return blocks
+	}
+	var elems []slack.BlockElement
+	for _, b := range m.Buttons {
+		btn := slack.NewButtonBlockElement(controlAction+b.Action, b.Value,
+			slack.NewTextBlockObject(slack.PlainTextType, b.Label, false, false))
+		switch b.Style {
+		case surface.ButtonPrimary:
+			btn.Style = slack.StylePrimary
+		case surface.ButtonDanger:
+			btn.Style = slack.StyleDanger
+		}
+		elems = append(elems, btn)
+	}
+	return append(blocks, slack.NewActionBlock("splitscreen_controls", elems...))
+}
+
+// PostControls implements surface.Controls.
+func (s *Surface) PostControls(ctx context.Context, m surface.ControlMessage) (surface.Ref, error) {
+	opts := []slack.MsgOption{
+		slack.MsgOptionBlocks(controlBlocks(m)...),
+		slack.MsgOptionText(ToMrkdwn(m.Text), false),
+	}
+	if m.Thread != "" {
+		opts = append(opts, slack.MsgOptionTS(m.Thread))
+	}
+	opts = append(opts, personaOptions(m.Persona)...)
+	channel, ts, err := s.api.PostMessageContext(ctx, m.Channel, opts...)
+	if err != nil {
+		return surface.Ref{}, fmt.Errorf("slack: post controls: %w", err)
+	}
+	return surface.Ref{Channel: channel, Thread: m.Thread, ID: ts}, nil
+}
+
+// UpdateControls implements surface.Controls.
+func (s *Surface) UpdateControls(ctx context.Context, ref surface.Ref, m surface.ControlMessage) error {
+	opts := []slack.MsgOption{
+		slack.MsgOptionBlocks(controlBlocks(m)...),
+		slack.MsgOptionText(ToMrkdwn(m.Text), false),
+	}
+	opts = append(opts, personaOptions(m.Persona)...)
+	if _, _, _, err := s.api.UpdateMessageContext(ctx, ref.Channel, ref.ID, opts...); err != nil {
+		return fmt.Errorf("slack: update controls: %w", err)
+	}
+	return nil
 }
 
 // Delete removes a message the app posted.

@@ -29,6 +29,9 @@ type turnContext struct {
 	Persona   surface.Persona
 	Activity  string
 	StartedAt time.Time
+	IsDM      bool
+	// ScheduleID is set on a scheduled run; see schedules.go.
+	ScheduleID string
 
 	// queued marks a turn whose message sits in the offline queue. Such a turn
 	// has not started anywhere, so a disconnect cannot have interrupted it:
@@ -228,6 +231,9 @@ func (g *Gateway) OnMessage(ctx context.Context, in surface.Inbound) {
 	case "routes":
 		g.notice(ctx, in, g.RoutesText())
 		return
+	case "schedules":
+		g.notice(ctx, in, g.SchedulesText(in))
+		return
 	}
 
 	if strings.TrimSpace(text) == "" && len(in.Files) == 0 {
@@ -281,6 +287,9 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 		Persona:   persona,
 		Activity:  rc.Display.EffectiveActivity(),
 		StartedAt: time.Now(),
+		IsDM:      in.IsDM,
+
+		ScheduleID: in.ScheduleID,
 	}
 	turn.touch()
 	if err := g.store.StartTurn(store.Turn{
@@ -389,6 +398,7 @@ func (g *Gateway) abandonTurn(ctx context.Context, turn *turnContext, reason str
 	g.clearWorking(turn.ThreadID)
 	g.settleStop(ctx, turn, false, false)
 	_ = g.store.FinishTurn(turn.TurnID, store.TurnError, reason, time.Since(turn.StartedAt).Milliseconds(), 0)
+	g.scheduleTurnEnded(ctx, turn, store.TurnError, reason)
 	g.endThreadTurn(ctx, turn.ThreadID)
 }
 
@@ -485,6 +495,13 @@ func (g *Gateway) admit(ctx context.Context, in surface.Inbound, runnerName stri
 	if len(q.waiting) >= maxQueueDepth {
 		g.queuesMu.Unlock()
 		g.notice(ctx, in, fmt.Sprintf("`%s` is busy and its queue is full (%d waiting). Please try again in a bit.", runnerName, maxQueueDepth))
+		// The message is dropped, so the thread slot the caller took for it
+		// must be given back, or every later message in the thread parks
+		// behind a turn that will never end.
+		g.endThreadTurn(ctx, threadKey(in.Surface, in.Channel, in.Thread))
+		if in.ScheduleID != "" {
+			g.recordScheduleResult(ctx, in.ScheduleID, store.TurnError, "runner queue full")
+		}
 		return true
 	}
 	// Append under the lock so a concurrent turnSlotFreed always sees this item;
@@ -680,7 +697,7 @@ func parseCommand(text string) (rest, cmd, arg string) {
 	}
 	cmd = strings.ToLower(fields[0])
 	switch cmd {
-	case "new", "rebind", "status", "cost", "routes", "stop":
+	case "new", "rebind", "status", "cost", "routes", "stop", "schedules":
 	case "runner":
 		if len(fields) > 1 {
 			arg = fields[1]

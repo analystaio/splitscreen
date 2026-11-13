@@ -739,3 +739,30 @@ routes:
 		}
 	}
 }
+
+func TestGatewayTimezone(t *testing.T) {
+	cfg := func(tz string) string {
+		return `
+gateway: { listen: 127.0.0.1:8443` + tz + ` }
+runners:
+  a: { display: { name: A }, cwd: /tmp, harness: claude-code }
+routes:
+  - { channel: C1, runner: a }
+`
+	}
+	c, err := Parse([]byte(cfg("")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Gateway.Timezone != "UTC" {
+		t.Errorf("default timezone = %q", c.Gateway.Timezone)
+	}
+	if _, err := Parse([]byte(cfg(", timezone: America/Los_Angeles"))); err != nil {
+		t.Error(err)
+	}
+	for _, bad := range []string{", timezone: Mars/Olympus", ", timezone: Local"} {
+		if _, err := Parse([]byte(cfg(bad))); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+}
