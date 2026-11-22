@@ -96,25 +96,26 @@ func TestEmptyCardShowsWorkingAndStop(t *testing.T) {
 	}
 }
 
-// While running: the steps, then the draft, then Stop. Finished: the steps
-// under their summary, the answer, the footer, and no button.
+// While running: the latest steps as plain lines, then the draft, then Stop,
+// and no plan to fold shut on every rewrite. Finished: the steps under their
+// summary, the answer, the footer, and no button.
 func TestCardLayoutRunningAndFinished(t *testing.T) {
 	c := newCard(t, &fakeCardAPI{})
 	c.absorb(surface.StreamUpdate{
 		Draft: "Looking at the disk.",
-		Steps: []surface.Step{{ID: "c1", Title: "Bash", Detail: "df -h", Status: surface.StepRunning}},
+		Steps: []surface.Step{{ID: "c1", Title: "Bash", Detail: "df -h *", Status: surface.StepRunning}},
 	})
 	running := c.blocks(false, c.shownText(), "")
-	if got := blockTypes(running); strings.Join(got, ",") != "plan,markdown,actions" {
+	if got := blockTypes(running); strings.Join(got, ",") != "context,markdown,actions" {
 		t.Fatalf("running blocks = %v", got)
 	}
-	if js := asJSON(t, running); !strings.Contains(js, `"title":"Working…"`) || !strings.Contains(js, `"in_progress"`) {
-		t.Fatalf("running plan = %s", js)
+	if js := asJSON(t, running); !strings.Contains(js, `"type":"plain_text","text":"⏳ Bash · df -h *"`) {
+		t.Fatalf("running steps = %s", js)
 	}
 
 	c.absorb(surface.StreamUpdate{
 		Text:  "Disk is fine.",
-		Steps: []surface.Step{{ID: "c1", Title: "Bash", Detail: "df -h", Status: surface.StepDone}},
+		Steps: []surface.Step{{ID: "c1", Title: "Bash", Detail: "df -h *", Status: surface.StepDone}},
 	})
 	final := c.blocks(true, "Disk is fine.", "Stopped by <@U1> after 3s.")
 	if got := blockTypes(final); strings.Join(got, ",") != "plan,markdown,context" {
@@ -123,6 +124,47 @@ func TestCardLayoutRunningAndFinished(t *testing.T) {
 	js := asJSON(t, final)
 	if !strings.Contains(js, `"title":"1 step`) || strings.Contains(js, "Looking at the disk") || strings.Contains(js, stopAction) {
 		t.Fatalf("final card = %s", js)
+	}
+}
+
+// What the model said before its first step stays text at the top of the
+// message, running and finished; what it said between steps is a step.
+func TestOpeningProseStaysAboveTheSteps(t *testing.T) {
+	c := newCard(t, &fakeCardAPI{})
+	c.absorb(surface.StreamUpdate{Steps: []surface.Step{
+		{ID: "prose-1", Title: "Checking the disk first.", Status: surface.StepDone, Prose: true},
+		{ID: "c1", Title: "Bash", Detail: "df -h", Status: surface.StepDone},
+		{ID: "prose-2", Title: "Now the load.", Status: surface.StepDone, Prose: true},
+		{ID: "c2", Title: "Bash", Detail: "uptime", Status: surface.StepRunning},
+	}})
+	running := c.blocks(false, c.shownText(), "")
+	if got := blockTypes(running); strings.Join(got, ",") != "markdown,context,actions" {
+		t.Fatalf("running blocks = %v", got)
+	}
+	if js := asJSON(t, running); !strings.Contains(js, `"text":"✓ Bash · df -h\n✓ Now the load.\n⏳ Bash · uptime"`) {
+		t.Fatalf("running card = %s", js)
+	}
+	final := c.blocks(true, "All good.", "")
+	if got := blockTypes(final); strings.Join(got, ",") != "markdown,plan,markdown" {
+		t.Fatalf("final blocks = %v", got)
+	}
+	js := asJSON(t, final)
+	if !strings.Contains(js, `"title":"3 steps`) || strings.Count(js, "Checking the disk first.") != 1 {
+		t.Fatalf("final card = %s", js)
+	}
+}
+
+// A running card lists only the newest steps, under a count of the rest.
+func TestRunningCardShowsOnlyRecentSteps(t *testing.T) {
+	c := newCard(t, &fakeCardAPI{})
+	var u surface.StreamUpdate
+	for i := 0; i < 8; i++ {
+		u.Steps = append(u.Steps, surface.Step{ID: "c" + string(rune('A'+i)), Title: "Bash", Detail: "step " + string(rune('A'+i)), Status: surface.StepDone})
+	}
+	c.absorb(u)
+	js := asJSON(t, c.blocks(false, "", ""))
+	if !strings.Contains(js, `"text":"3 earlier steps\n✓ Bash · step D\n`) || strings.Contains(js, "step C") || !strings.Contains(js, "step H") {
+		t.Fatalf("running card = %s", js)
 	}
 }
 
@@ -143,17 +185,17 @@ func TestCardPlanOverflow(t *testing.T) {
 	for i := 0; i < 70; i++ {
 		status := surface.StepDone
 		if i == 69 {
-			status = surface.StepRunning
+			status = surface.StepFailed
 		}
 		u.Steps = append(u.Steps, surface.Step{ID: "c" + string(rune('A'+i)), Title: "Bash", Status: status})
 	}
 	c.absorb(u)
-	plan := c.plan(false)
+	plan := c.plan(c.order)
 	if len(plan.Tasks) != maxPlanTasks {
 		t.Fatalf("plan has %d tasks, want %d", len(plan.Tasks), maxPlanTasks)
 	}
 	last := plan.Tasks[len(plan.Tasks)-1]
-	if last.TaskID != overflowID || last.Title != "…and 21 more steps" || last.Status != slack.TaskCardStatusInProgress {
+	if last.TaskID != overflowID || last.Title != "…and 21 more steps" || last.Status != slack.TaskCardStatusError {
 		t.Fatalf("overflow card = %+v", last)
 	}
 }

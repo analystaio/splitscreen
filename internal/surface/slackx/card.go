@@ -47,6 +47,11 @@ const (
 	stopInlineBlock = "splitscreen_stop_inline"
 
 	cardWorking = "Working…"
+
+	// cardRecentSteps is how many of the latest steps a running card lists,
+	// and cardStepLine how long one of those lines may be.
+	cardRecentSteps = 5
+	cardStepLine    = 140
 )
 
 // cardAPI is the part of the Slack client a card uses.
@@ -297,13 +302,27 @@ func (c *card) messageOptionsFor(blocks []slack.Block, text string) []slack.MsgO
 	return append(opts, personaOptions(c.persona)...)
 }
 
-// blocks lays the card out: the steps, the prose, and under them either the
-// Stop button (running), the line saying a stop was asked for, or the footer
-// (finished). Called under the lock.
+// blocks lays the card out. What the model said before its first step opens
+// the message as text. Under it come the steps: while the turn runs, the
+// latest few as plain lines, and once it has finished, all of them folded into
+// one plan. Then the prose, and last either the Stop button (running), the
+// line saying a stop was asked for, or the footer (finished).
+//
+// The plan waits for the end because a client folds it shut again on every
+// rewrite of the message, so a running turn could not be read while open.
+// Called under the lock.
 func (c *card) blocks(final bool, text, footer string) []slack.Block {
 	var out []slack.Block
-	if plan := c.plan(final); plan != nil {
-		out = append(out, plan)
+	intro, steps := c.intro()
+	if intro != "" {
+		out = append(out, slack.NewMarkdownBlock("", intro))
+	}
+	if final {
+		if plan := c.plan(steps); plan != nil {
+			out = append(out, plan)
+		}
+	} else if recent := c.recent(steps); recent != nil {
+		out = append(out, recent)
 	}
 	if text != "" {
 		out = append(out, slack.NewMarkdownBlock("", text))
@@ -337,17 +356,72 @@ func contextBlock(text string) *slack.ContextBlock {
 		slack.NewTextBlockObject(slack.MarkdownType, ToMrkdwn(text), false, false))
 }
 
-// plan renders the steps as one plan block, nil when there are none. Slack
-// caps a plan at maxPlanTasks, so the steps past the reserve share one card
-// that counts them, shows the newest and carries their aggregate status.
-func (c *card) plan(final bool) *slack.PlanBlock {
-	if len(c.order) == 0 {
+// intro separates what the model said before doing anything from the steps
+// that followed: the text, and the ids of the remaining steps in order.
+func (c *card) intro() (string, []string) {
+	var said []string
+	n := 0
+	for ; n < len(c.order); n++ {
+		step := c.steps[c.order[n]]
+		if !step.Prose {
+			break
+		}
+		line := step.Title
+		if step.Detail != "" {
+			line += "\n" + step.Detail
+		}
+		said = append(said, line)
+	}
+	return strings.Join(said, "\n\n"), c.order[n:]
+}
+
+// recent shows a running turn's latest steps as plain lines, nil when there
+// are none: the newest cardRecentSteps, under a count of the ones before.
+func (c *card) recent(ids []string) *slack.ContextBlock {
+	if len(ids) == 0 {
 		return nil
 	}
-	own := c.order
+	var lines []string
+	if earlier := len(ids) - cardRecentSteps; earlier > 0 {
+		ids = ids[earlier:]
+		noun := "steps"
+		if earlier == 1 {
+			noun = "step"
+		}
+		lines = append(lines, fmt.Sprintf("%d earlier %s", earlier, noun))
+	}
+	for _, id := range ids {
+		step := c.steps[id]
+		mark := "✓"
+		switch step.Status {
+		case surface.StepRunning:
+			mark = "⏳"
+		case surface.StepFailed:
+			mark = "✗"
+		}
+		line := truncateTitle(step.Title)
+		if step.Detail != "" && !step.Prose {
+			line += " · " + strings.Join(strings.Fields(step.Detail), " ")
+		}
+		lines = append(lines, mark+" "+truncate(line, cardStepLine))
+	}
+	// Plain text, so nothing in a command line is read as formatting.
+	return slack.NewContextBlock("",
+		slack.NewTextBlockObject(slack.PlainTextType, strings.Join(lines, "\n"), true, false))
+}
+
+// plan renders the finished turn's steps as one plan block, nil when there
+// are none. Slack caps a plan at maxPlanTasks, so the steps past the reserve
+// share one card that counts them, shows the newest and carries their
+// aggregate status.
+func (c *card) plan(ids []string) *slack.PlanBlock {
+	if len(ids) == 0 {
+		return nil
+	}
+	own := ids
 	var extra []string
 	if len(own) > maxPlanTasks-1 {
-		own, extra = c.order[:maxPlanTasks-1], c.order[maxPlanTasks-1:]
+		own, extra = ids[:maxPlanTasks-1], ids[maxPlanTasks-1:]
 	}
 	tasks := make([]*slack.TaskCardBlock, 0, len(own)+1)
 	for _, id := range own {
@@ -361,19 +435,14 @@ func (c *card) plan(final bool) *slack.PlanBlock {
 		tasks = append(tasks, task)
 	}
 	if len(extra) > 0 {
-		var running, failed bool
+		var failed bool
 		for _, id := range extra {
-			running = running || c.steps[id].Status == surface.StepRunning
 			failed = failed || c.steps[id].Status == surface.StepFailed
 		}
 		task := slack.NewTaskCardBlock(overflowID, fmt.Sprintf("…and %d more steps", len(extra)))
-		switch {
-		case failed:
+		task.Status = slack.TaskCardStatusComplete
+		if failed {
 			task.Status = slack.TaskCardStatusError
-		case running:
-			task.Status = slack.TaskCardStatusInProgress
-		default:
-			task.Status = slack.TaskCardStatusComplete
 		}
 		newest := c.steps[extra[len(extra)-1]]
 		detail := newest.Title
@@ -383,24 +452,20 @@ func (c *card) plan(final bool) *slack.PlanBlock {
 		task.Details = richText(truncate(detail, 2000))
 		tasks = append(tasks, task)
 	}
-	title := cardWorking
-	if final {
-		title = c.finalTitle()
-	}
-	return slack.NewPlanBlock(title).WithTasks(tasks...)
+	return slack.NewPlanBlock(c.finalTitle(ids)).WithTasks(tasks...)
 }
 
 // finalTitle summarizes the finished plan: step count, failures, and how long
 // the turn ran.
-func (c *card) finalTitle() string {
+func (c *card) finalTitle(ids []string) string {
 	var failed int
-	for _, step := range c.steps {
-		if step.Status == surface.StepFailed {
+	for _, id := range ids {
+		if c.steps[id].Status == surface.StepFailed {
 			failed++
 		}
 	}
-	title := fmt.Sprintf("%d steps", len(c.order))
-	if len(c.order) == 1 {
+	title := fmt.Sprintf("%d steps", len(ids))
+	if len(ids) == 1 {
 		title = "1 step"
 	}
 	if failed > 0 {
