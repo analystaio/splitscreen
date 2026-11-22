@@ -274,7 +274,16 @@ type streamEvent struct {
 	Model     string          `json:"model"`
 	// RateLimitInfo is the payload of a rate_limit_event.
 	RateLimitInfo *rawRateLimitInfo `json:"rate_limit_info"`
+	// Origin says what started the turn a result closes. It is absent for a
+	// turn started by a message sent on stdin.
+	Origin *struct {
+		Kind string `json:"kind"`
+	} `json:"origin"`
 }
+
+// originTaskNotification marks a result for a turn the CLI started on its own
+// to deliver a background task's notification.
+const originTaskNotification = "task-notification"
 
 // rawRateLimitInfo is a rate_limit_event's payload. The top-level fields
 // describe whichever window decided the status; UnifiedWindows, when present,
@@ -503,6 +512,15 @@ func (s *session) readStdout(r io.Reader) {
 			}
 
 		case "result":
+			// A result the CLI produced for its own task notification is not
+			// the end of the message we sent. A resumed session reports the
+			// background tasks its last process left behind this way, before
+			// it reaches the message that woke it: ending the turn there left
+			// the real one running with no turn to report to, so its
+			// permission requests were refused and its answer was dropped.
+			if ev.Origin != nil && ev.Origin.Kind == originTaskNotification {
+				continue
+			}
 			usage := harness.Usage{Model: lastModel, RateLimits: rateLimits}
 			rateLimits = nil
 			if ev.Model != "" {
