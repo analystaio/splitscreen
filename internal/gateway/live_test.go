@@ -138,3 +138,51 @@ func TestSpentInlineStopDoesNotReplaceTheMessage(t *testing.T) {
 		t.Fatalf("the turn's message was replaced: %v", resolved)
 	}
 }
+
+// A turn the runner's harness starts on its own, when a background task
+// finishes after the turn that started it, gets a message of its own in the
+// thread, and holds up nothing that follows.
+func TestUnpromptedTurnIsShownInItsThread(t *testing.T) {
+	quickStopControl(t)
+	h, srf := newLiveHarness(t)
+	ws := h.connect(t, "s3cret")
+	readFrame[*protocol.HelloAck](t, ws)
+
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T1",
+		User: surface.User{ID: "U1"}, Addressed: true, Text: "start it and tell me when it ends",
+	})
+	msg := readFrame[*protocol.Message](t, ws)
+	send(t, ws, &protocol.TextDelta{ThreadID: msg.ThreadID, TurnID: msg.TurnID, Text: "Started."})
+	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: msg.TurnID})
+	eventually(t, "first turn closed", func() bool {
+		_, _, closes := srf.state()
+		return len(closes) == 1
+	})
+
+	// Not this runner's thread, or not a thread at all: nothing opens.
+	send(t, ws, &protocol.TurnStart{ThreadID: "test:C9:T9", TurnID: "turn_stray"})
+	send(t, ws, &protocol.TurnStart{ThreadID: msg.ThreadID, TurnID: "turn_own"})
+	send(t, ws, &protocol.TextDelta{ThreadID: msg.ThreadID, TurnID: "turn_own", Text: "It finished."})
+	eventually(t, "second message opened", func() bool {
+		opens, _, _ := srf.state()
+		return len(opens) == 2
+	})
+	if opens, _, _ := srf.state(); opens[1].Thread != "T1" || opens[1].Channel != "C1" || opens[1].StopTurnID != "turn_own" {
+		t.Fatalf("unprompted turn opened as %+v", opens[1])
+	}
+	send(t, ws, &protocol.Done{ThreadID: msg.ThreadID, TurnID: "turn_own"})
+	eventually(t, "unprompted turn closed with its text", func() bool {
+		_, _, closes := srf.state()
+		return len(closes) == 2 && closes[1].Text == "It finished."
+	})
+
+	// The thread is free: the next message dispatches at once.
+	h.gw.OnMessage(context.Background(), surface.Inbound{
+		Surface: "test", Channel: "C1", Thread: "T1",
+		User: surface.User{ID: "U1"}, Addressed: true, Text: "thanks",
+	})
+	if next := readFrame[*protocol.Message](t, ws); next.ThreadID != msg.ThreadID {
+		t.Fatalf("next message went to %q", next.ThreadID)
+	}
+}

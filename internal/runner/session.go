@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -39,8 +40,54 @@ type threadSession struct {
 	// ends — interrupted, killed, or erroring on the way out — it is reported
 	// as interrupted rather than as a failure.
 	cancelled bool
+	// notified is set when the harness reports a background task, which is
+	// what lets it start a turn of its own; ownTurn marks the current turn as
+	// such a one, opened here rather than by a message from the gateway.
+	notified bool
+	ownTurn  bool
 
 	sendMu sync.Mutex
+}
+
+// noteBackground records whether the harness has a background task's report
+// to act on.
+func (t *threadSession) noteBackground(pending bool) {
+	t.turnMu.Lock()
+	t.notified = pending
+	t.turnMu.Unlock()
+}
+
+// beginOwnTurn opens a turn for output the harness produced on its own. It
+// reports false, and changes nothing, unless the session is between turns and
+// a background task has reported in: output with neither is a straggler from
+// the turn before, and stays attributed to it.
+func (t *threadSession) beginOwnTurn(id string) bool {
+	t.turnMu.Lock()
+	defer t.turnMu.Unlock()
+	if t.busy || !t.notified {
+		return false
+	}
+	t.currentTurn = id
+	t.busy = true
+	t.cancelled = false
+	t.ownTurn = true
+	t.notified = false
+	t.lastActivity = time.Now()
+	return true
+}
+
+// endOwnTurn closes the turn the harness started on its own, if that is what
+// is running, and returns its id and whether a stop was asked for.
+func (t *threadSession) endOwnTurn() (id string, cancelled, ok bool) {
+	t.turnMu.Lock()
+	defer t.turnMu.Unlock()
+	if !t.busy || !t.ownTurn {
+		return "", false, false
+	}
+	t.busy = false
+	t.ownTurn = false
+	t.lastActivity = time.Now()
+	return t.currentTurn, t.cancelled, true
 }
 
 func (t *threadSession) setTurn(id string) {
@@ -48,6 +95,7 @@ func (t *threadSession) setTurn(id string) {
 	t.currentTurn = id
 	t.busy = true
 	t.cancelled = false
+	t.ownTurn = false
 	t.lastActivity = time.Now()
 	t.turnMu.Unlock()
 }
@@ -82,6 +130,7 @@ func (t *threadSession) runningTurn(id string) bool {
 func (t *threadSession) endTurn() {
 	t.turnMu.Lock()
 	t.busy = false
+	t.ownTurn = false
 	t.lastActivity = time.Now()
 	t.turnMu.Unlock()
 }
@@ -284,6 +333,12 @@ func (r *Runner) handleMessage(ctx context.Context, msg *protocol.Message) {
 		fail("session_start_failed", err)
 		return
 	}
+	// A message overtakes a turn the harness started on its own: the harness
+	// answers the message next, in the message's turn, so the earlier one is
+	// closed here rather than left open with nothing to end it.
+	if own, _, ok := ts.endOwnTurn(); ok {
+		_ = r.send(ctx, &protocol.Done{ThreadID: msg.ThreadID, TurnID: own})
+	}
 	ts.setTurn(msg.TurnID)
 	r.touchActive()
 
@@ -331,8 +386,38 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 		// still streaming tool calls.
 		ts.touch()
 		r.markActive()
+		switch ev.Kind {
+		case harness.EventText, harness.EventThinking, harness.EventToolUse:
+			// Output with no turn open, after a background task reported in,
+			// is the harness acting on that report unprompted. Open a turn
+			// for it, or the gateway has nowhere to put what it says.
+			if own := newTurnID(); ts.beginOwnTurn(own) {
+				r.touchActive()
+				r.log.Info("harness started a turn on its own", "thread", ts.threadID, "turn", own)
+				_ = r.send(ctx, &protocol.TurnStart{ThreadID: ts.threadID, TurnID: own})
+			}
+		}
 		turn := ts.turn()
 		switch ev.Kind {
+		case harness.EventBackground:
+			ts.noteBackground(true)
+
+		case harness.EventBackgroundDone:
+			ts.noteBackground(false)
+			own, cancelled, ok := ts.endOwnTurn()
+			if !ok {
+				// Reported while a turn of the gateway's was running, or with
+				// nothing said: there is no turn of ours to close.
+				continue
+			}
+			r.settleActive()
+			r.rememberSession(ts.threadID, ev.SessionID)
+			_ = r.send(ctx, usageFrame(ts.threadID, own, ev.Usage))
+			_ = r.send(ctx, &protocol.Done{
+				ThreadID: ts.threadID, TurnID: own,
+				SessionID: ev.SessionID, Interrupted: cancelled,
+			})
+
 		case harness.EventText:
 			_ = r.send(ctx, &protocol.TextDelta{ThreadID: ts.threadID, TurnID: turn, Text: ev.Text})
 
@@ -359,18 +444,7 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			})
 
 		case harness.EventUsage:
-			_ = r.send(ctx, &protocol.Usage{
-				ThreadID: ts.threadID, TurnID: turn,
-				Model:            ev.Usage.Model,
-				InputTokens:      ev.Usage.InputTokens,
-				CacheWriteTokens: ev.Usage.CacheWriteTokens,
-				CacheReadTokens:  ev.Usage.CacheReadTokens,
-				OutputTokens:     ev.Usage.OutputTokens,
-				TTLHint:          ev.Usage.TTLHint,
-				ProviderCostUSD:  ev.Usage.ProviderCostUSD,
-				Known:            ev.Usage.Known,
-				RateLimits:       rateLimitFrames(ev.Usage.RateLimits),
-			})
+			_ = r.send(ctx, usageFrame(ts.threadID, turn, ev.Usage))
 
 		case harness.EventDone:
 			ts.sessionMu.Lock()
@@ -434,6 +508,31 @@ func (r *Runner) pumpEvents(ts *threadSession, sess harness.Session) {
 			Code: "session_ended", Message: "the harness session ended before the turn completed",
 		})
 	}
+}
+
+func usageFrame(threadID, turn string, u harness.Usage) *protocol.Usage {
+	return &protocol.Usage{
+		ThreadID: threadID, TurnID: turn,
+		Model:            u.Model,
+		InputTokens:      u.InputTokens,
+		CacheWriteTokens: u.CacheWriteTokens,
+		CacheReadTokens:  u.CacheReadTokens,
+		OutputTokens:     u.OutputTokens,
+		TTLHint:          u.TTLHint,
+		ProviderCostUSD:  u.ProviderCostUSD,
+		Known:            u.Known,
+		RateLimits:       rateLimitFrames(u.RateLimits),
+	}
+}
+
+// newTurnID mints the id of a turn the harness started on its own, in the
+// shape the gateway gives the turns it opens.
+func newTurnID() string {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("runner: crypto/rand unavailable: " + err.Error())
+	}
+	return "turn_" + hex.EncodeToString(b[:])
 }
 
 // interruptGrace is how long an interrupt has to end a turn before the runner

@@ -33,6 +33,10 @@ type turnContext struct {
 	IsDM      bool
 	// ScheduleID is set on a scheduled run; see schedules.go.
 	ScheduleID string
+	// Unprompted marks a turn the runner's harness started on its own (see
+	// onTurnStart). It holds neither the thread's turn slot nor one of the
+	// runner's, so it gives neither back when it ends.
+	Unprompted bool
 
 	// For the turn's telemetry record (telemetry.go). Prompt is the text sent
 	// to the runner.

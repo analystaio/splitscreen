@@ -456,8 +456,39 @@ func TestTaskNotificationResultDoesNotEndTheTurn(t *testing.T) {
 	for _, ev := range collect(t, s) {
 		kinds = append(kinds, ev.Kind)
 	}
-	want := []harness.EventKind{harness.EventText, harness.EventUsage, harness.EventDone}
+	want := []harness.EventKind{
+		harness.EventBackground, harness.EventBackgroundDone,
+		harness.EventText, harness.EventUsage, harness.EventDone,
+	}
 	if !reflect.DeepEqual(kinds, want) {
 		t.Fatalf("events = %v, want %v", kinds, want)
+	}
+}
+
+// A background task that finishes after its turn ended makes the CLI act on
+// it unprompted. That is reported as a turn of its own, bracketed by the
+// task's notification and a result marked as one, and carrying its usage.
+func TestBackgroundTaskFinishingLaterIsItsOwnTurn(t *testing.T) {
+	s := newParser(t, `{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"started"}]},"session_id":"s1"}`+"\n"+
+		`{"type":"result","subtype":"success","is_error":false,"num_turns":2,"session_id":"s1","usage":{"input_tokens":2,"output_tokens":4}}`+"\n"+
+		`{"type":"system","subtype":"task_updated","task_id":"b1","session_id":"s1"}`+"\n"+
+		`{"type":"system","subtype":"task_notification","task_id":"b1","status":"completed","session_id":"s1"}`+"\n"+
+		`{"type":"system","subtype":"init","session_id":"s1"}`+"\n"+
+		`{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"finished"}]},"session_id":"s1"}`+"\n"+
+		`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"s1","usage":{"input_tokens":3,"output_tokens":7},"origin":{"kind":"task-notification"}}`)
+	events := collect(t, s)
+	var kinds []harness.EventKind
+	for _, ev := range events {
+		kinds = append(kinds, ev.Kind)
+	}
+	want := []harness.EventKind{
+		harness.EventText, harness.EventUsage, harness.EventDone,
+		harness.EventBackground, harness.EventSession, harness.EventText, harness.EventBackgroundDone,
+	}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("events = %v, want %v", kinds, want)
+	}
+	if last := events[len(events)-1]; !last.Usage.Known || last.Usage.OutputTokens != 7 {
+		t.Fatalf("the unprompted turn's usage was not carried: %+v", last.Usage)
 	}
 }
