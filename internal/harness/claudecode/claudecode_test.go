@@ -442,3 +442,22 @@ func TestRateLimitEventWithoutWindowsFallsBack(t *testing.T) {
 		t.Fatalf("usage = %+v, want rate limits %+v (an empty event must not erase a reading)", us, want)
 	}
 }
+
+// A resumed session first reports the background tasks its last process left
+// behind, as a result of its own, and only then runs the message it was sent.
+// That first result must not end the turn. The lines are the CLI's own, from
+// resuming a session that was killed with a background shell running.
+func TestTaskNotificationResultDoesNotEndTheTurn(t *testing.T) {
+	s := newParser(t, `{"type":"system","subtype":"task_notification","task_id":"b7x5a4occ","status":"stopped","session_id":"s1"}`+"\n"+
+		`{"type":"result","subtype":"success","is_error":false,"num_turns":0,"session_id":"s1","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"origin":{"kind":"task-notification"}}`+"\n"+
+		`{"type":"assistant","message":{"model":"m","content":[{"type":"text","text":"pong"}]},"session_id":"s1"}`+"\n"+
+		`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"s1","usage":{"input_tokens":2,"output_tokens":4}}`)
+	var kinds []harness.EventKind
+	for _, ev := range collect(t, s) {
+		kinds = append(kinds, ev.Kind)
+	}
+	want := []harness.EventKind{harness.EventText, harness.EventUsage, harness.EventDone}
+	if !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("events = %v, want %v", kinds, want)
+	}
+}
