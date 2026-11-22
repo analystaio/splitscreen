@@ -483,6 +483,45 @@ there is appended to the bundle's `CLAUDE.md` at every session start — the one
 place for notes. Bundle skills still win on a name clash; bundle memory stays
 bundle-owned.
 
+## Turn records (OTLP)
+
+The gateway can send one OpenTelemetry log record per finished turn to a
+collector, for dashboards, search, and agents that cannot read SQLite on the
+gateway host. It is off unless `gateway.telemetry.logs_endpoint` is set:
+
+```yaml
+gateway:
+  telemetry:
+    logs_endpoint: http://127.0.0.1:4318/v1/logs   # OTLP/HTTP, sent as JSON
+    headers: { Authorization: otlp-token }         # header -> secret name, optional
+    include_text: false                            # the prompt and the answer
+    max_text_bytes: 32768                          # per text attribute
+```
+
+Every record says where the turn happened (`splitscreen.surface`, `.channel.id`,
+`.channel.name`, `.channel.private`, `.channel.dm`, `.thread`), who asked
+(`splitscreen.user.id`, `.user.name`), which runner answered and how it ended
+(`splitscreen.runner`, `.turn.id`, `.turn.status`, `.turn.error`,
+`.turn.started_at`, `.turn.duration_ms`, `.turn.tool_calls`, `.session.id`,
+`.schedule.id`), and what it used (`gen_ai.request.model`,
+`gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`,
+`splitscreen.usage.cache_read_tokens`, `.usage.cache_write_tokens`,
+`.usage.known`, `.cost.computed_usd`, `.cost.reported_usd`). The body is one
+human-readable line. Tool calls themselves stay in the audit log.
+
+`include_text: true` adds `splitscreen.prompt` (the message sent to the runner)
+and `splitscreen.answer` (the reply it posted), each cut at `max_text_bytes` and
+flagged `….truncated` when cut. With it on, everything said to every runner
+leaves the gateway, so give the destination the same access control as the chat
+workspace. `splitscreen.channel.private` is true for private channels, DMs, and
+any channel the surface could not look up, so a collector can route those
+records somewhere narrower; when in doubt the flag errs toward private.
+
+Export never blocks or fails a turn. Records are batched in memory and dropped,
+with a warning in the gateway log, when the queue is full or the collector keeps
+refusing them; the audit log remains the system of record. The settings are read
+on every turn, so a reload switches them.
+
 ## Configuration reference
 
 `splitscreen config check` validates everything and reports every problem at

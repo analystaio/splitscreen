@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
@@ -51,7 +52,43 @@ type Gateway struct {
 	// Timezone is the IANA zone a schedule runs in when whoever asked for it
 	// did not name one. Defaults to UTC.
 	Timezone string `yaml:"timezone"`
+
+	// Telemetry exports a record of every finished turn over OTLP. Off unless
+	// an endpoint is set.
+	Telemetry Telemetry `yaml:"telemetry"`
 }
+
+// Telemetry configures the OTLP export of turn records: one log record per
+// finished turn, carrying where it happened, who asked, which runner answered,
+// how it ended, and its usage. The audit log stays the system of record; this
+// is a copy for tools that cannot read SQLite on the gateway host.
+//
+// Read on every turn, so a config reload switches it.
+type Telemetry struct {
+	// LogsEndpoint is a full OTLP/HTTP logs URL, e.g.
+	// "http://127.0.0.1:4318/v1/logs" for a collector on the gateway host.
+	// Records are sent as OTLP JSON. Empty disables the export.
+	LogsEndpoint string `yaml:"logs_endpoint"`
+
+	// Headers are sent with every request, as header name -> secret name, for
+	// backends that authenticate the sender. Values never appear in this file.
+	// Not in SecretRefs on purpose: a missing one is logged at send time and
+	// never fatal, since losing the export must not take the gateway down.
+	Headers map[string]string `yaml:"headers"`
+
+	// IncludeText adds the message that started the turn and the answer the
+	// runner gave. Off by default: with it on, everything said to every runner
+	// leaves the gateway, so the destination needs the same care as the chat
+	// workspace itself.
+	IncludeText bool `yaml:"include_text"`
+
+	// MaxTextBytes bounds each of the two text attributes. Longer text is cut
+	// at a UTF-8 boundary and marked as truncated.
+	MaxTextBytes int `yaml:"max_text_bytes"`
+}
+
+// Enabled reports whether turn records are exported at all.
+func (t Telemetry) Enabled() bool { return t.LogsEndpoint != "" }
 
 type TLS struct {
 	Cert string `yaml:"cert"`
@@ -135,6 +172,7 @@ const (
 	DefaultExpiryWarningHours  = 14 * 24
 	DefaultPermissionTimeoutMS = 15 * 60 * 1000
 	DefaultTimezone            = "UTC"
+	DefaultTelemetryTextBytes  = 32 * 1024
 )
 
 func (c *Config) applyGatewayDefaults() {
@@ -159,6 +197,9 @@ func (c *Config) applyGatewayDefaults() {
 	}
 	if g.Timezone == "" {
 		g.Timezone = DefaultTimezone
+	}
+	if g.Telemetry.MaxTextBytes == 0 {
+		g.Telemetry.MaxTextBytes = DefaultTelemetryTextBytes
 	}
 	if g.Forge.Kind == "" && (g.Forge.AppID != "" || g.Forge.KeyFile != "") {
 		g.Forge.Kind = ForgeGitHubApp
@@ -191,6 +232,7 @@ func (c *Config) validateGateway(p *problems) {
 	if _, err := time.LoadLocation(g.Timezone); err != nil || g.Timezone == "Local" {
 		p.addf("gateway.timezone %q is not an IANA time zone name", g.Timezone)
 	}
+	validateTelemetry(g.Telemetry, p)
 
 	switch g.Forge.Kind {
 	case "":
@@ -320,4 +362,26 @@ func (c *Config) SecretRefs() []string {
 		out = append(out, n)
 	}
 	return out
+}
+
+func validateTelemetry(t Telemetry, p *problems) {
+	if t.LogsEndpoint != "" {
+		u, err := url.Parse(t.LogsEndpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			p.addf("gateway.telemetry.logs_endpoint %q must be an http or https URL", t.LogsEndpoint)
+		}
+	} else if t.IncludeText || len(t.Headers) > 0 {
+		p.warnf("gateway.telemetry: settings are present but logs_endpoint is empty, so nothing is exported")
+	}
+	for h, sec := range t.Headers {
+		if strings.TrimSpace(h) == "" || strings.ContainsAny(h, " :\r\n") {
+			p.addf("gateway.telemetry.headers: %q is not a valid header name", h)
+		}
+		if sec == "" {
+			p.addf("gateway.telemetry.headers.%s: needs a secret name", h)
+		}
+	}
+	if t.MaxTextBytes < 0 {
+		p.addf("gateway.telemetry.max_text_bytes must not be negative")
+	}
 }

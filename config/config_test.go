@@ -766,3 +766,53 @@ routes:
 		}
 	}
 }
+
+func TestGatewayTelemetry(t *testing.T) {
+	cfg := func(tel string) string {
+		return `
+gateway: { listen: 127.0.0.1:8443` + tel + ` }
+runners:
+  a: { display: { name: A }, cwd: /tmp, harness: claude-code }
+routes:
+  - { channel: C1, runner: a }
+`
+	}
+	c, err := Parse([]byte(cfg("")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Gateway.Telemetry.Enabled() || c.Gateway.Telemetry.IncludeText {
+		t.Errorf("telemetry on by default: %+v", c.Gateway.Telemetry)
+	}
+	if c.Gateway.Telemetry.MaxTextBytes != DefaultTelemetryTextBytes {
+		t.Errorf("max_text_bytes default = %d", c.Gateway.Telemetry.MaxTextBytes)
+	}
+
+	c, err = Parse([]byte(cfg(`, telemetry: { logs_endpoint: "http://127.0.0.1:4318/v1/logs", include_text: true, headers: { Authorization: otlp-token } }`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Gateway.Telemetry.Enabled() || !c.Gateway.Telemetry.IncludeText {
+		t.Errorf("telemetry = %+v", c.Gateway.Telemetry)
+	}
+
+	for _, bad := range []string{
+		`, telemetry: { logs_endpoint: "127.0.0.1:4318" }`,
+		`, telemetry: { logs_endpoint: "ftp://x/v1/logs" }`,
+		`, telemetry: { logs_endpoint: "http://x/v1/logs", headers: { "Bad Header": s } }`,
+		`, telemetry: { logs_endpoint: "http://x/v1/logs", headers: { X-Key: "" } }`,
+		`, telemetry: { logs_endpoint: "http://x/v1/logs", max_text_bytes: -1 }`,
+	} {
+		if _, err := Parse([]byte(cfg(bad))); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
+	}
+
+	c, err = Parse([]byte(cfg(`, telemetry: { include_text: true }`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Warnings) == 0 {
+		t.Error("include_text without an endpoint should warn")
+	}
+}

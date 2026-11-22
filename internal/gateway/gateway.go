@@ -16,6 +16,7 @@ import (
 	"github.com/analystaio/splitscreen/config"
 	"github.com/analystaio/splitscreen/internal/forge"
 	"github.com/analystaio/splitscreen/internal/mcpproxy"
+	"github.com/analystaio/splitscreen/internal/otlp"
 	"github.com/analystaio/splitscreen/internal/pricing"
 	"github.com/analystaio/splitscreen/internal/secrets"
 	"github.com/analystaio/splitscreen/internal/store"
@@ -41,6 +42,8 @@ type Gateway struct {
 
 	surfaces map[string]surface.Surface
 	hub      *Hub
+
+	telemetry *otlp.Exporter
 
 	streams sync.Map // turn id -> *stream
 	// streamWarned keeps the "this surface cannot stream" notice to one line
@@ -118,6 +121,8 @@ type Options struct {
 	// Waker starts the machine of an offline runner that declares wake. Nil
 	// means wake requests are reported in-thread as impossible.
 	Waker wake.Starter
+	// Version is reported as service.version on telemetry.
+	Version string
 }
 
 // New builds a gateway. It does not connect anything; call Run.
@@ -163,6 +168,7 @@ func New(o Options) (*Gateway, error) {
 		wakeRetryEvery: defaultWakeRetryEvery,
 		wakeRetryFor:   defaultWakeRetryFor,
 	}
+	g.telemetry = g.newTelemetry(o.Version)
 	g.channels.byID = map[string]channelState{}
 	g.sched.lastRun = map[string]string{}
 	go g.runWorking()
@@ -378,6 +384,12 @@ func (g *Gateway) Run(ctx context.Context) error {
 	go func() {
 		defer wg.Done()
 		g.runSchedules(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		g.telemetry.Run(ctx)
 	}()
 
 	wg.Add(1)

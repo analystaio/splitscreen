@@ -59,7 +59,7 @@ func TestDirectoryResolvesAndCaches(t *testing.T) {
 		if name != "Jane Doe" || email != "jane@example.com" {
 			t.Fatalf("user = %q %q", name, email)
 		}
-		if got := d.channel(ctx, "C1"); got != "box-foo" {
+		if got, private := d.channel(ctx, "C1"); got != "box-foo" || private {
 			t.Fatalf("channel = %q", got)
 		}
 	}
@@ -85,8 +85,8 @@ func TestDirectoryDegradesOnFailure(t *testing.T) {
 		if name, email := d.user(ctx, "U1"); name != "" || email != "" {
 			t.Fatalf("got %q %q from a failing lookup", name, email)
 		}
-		if d.channel(ctx, "C1") != "" {
-			t.Fatal("got a channel name from a failing lookup")
+		if name, private := d.channel(ctx, "C1"); name != "" || !private {
+			t.Fatal("a failing lookup gave a name, or a public channel")
 		}
 	}
 	if api.userCalls != 1 || api.chanCalls != 1 {
@@ -99,9 +99,9 @@ func TestDirectoryDegradesOnFailure(t *testing.T) {
 	}
 
 	// Known name, then the API starts failing: keep the stale name.
-	d.rememberChannel("C2", "known")
+	d.rememberChannel("C2", "known", false)
 	*now = now.Add(directoryTTL + time.Second)
-	if got := d.channel(ctx, "C2"); got != "known" {
+	if got, _ := d.channel(ctx, "C2"); got != "known" {
 		t.Errorf("channel = %q; a transient failure should keep the stale name", got)
 	}
 }
@@ -246,5 +246,30 @@ func TestEmptyIDIsNeverTrusted(t *testing.T) {
 	d, _ := testDirectory(&fakeDirAPI{user: &slack.User{TeamID: "T1"}})
 	if d.isMember(context.Background(), "", "T1") {
 		t.Fatal("an empty id counted as a member")
+	}
+}
+
+func TestChannelPrivacy(t *testing.T) {
+	ctx := context.Background()
+
+	api := &fakeChanAPI{ch: &slack.Channel{}}
+	api.ch.Name, api.ch.IsPrivate = "secret", true
+	d, _ := testDirectory(api)
+	if name, private := d.channel(ctx, "G1"); name != "secret" || !private {
+		t.Fatalf("channel = %q private=%v, want a private channel", name, private)
+	}
+
+	// Never seen and the lookup fails: assume private.
+	api2 := &fakeChanAPI{}
+	api2.chanErr = errors.New("boom")
+	d2, _ := testDirectory(api2)
+	if _, private := d2.channel(ctx, "C9"); !private {
+		t.Fatal("an unresolvable channel must read as private")
+	}
+
+	// Learned elsewhere (the membership check) as public: stays public.
+	d2.rememberChannel("C3", "general", false)
+	if _, private := d2.channel(ctx, "C3"); private {
+		t.Fatal("a known public channel turned private on a cached read")
 	}
 }
