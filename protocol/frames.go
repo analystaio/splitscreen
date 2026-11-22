@@ -36,7 +36,9 @@ const (
 	TypeCredentialRequest FrameType = "credential.request"
 	TypeUsage             FrameType = "usage"
 	TypeDone              FrameType = "done"
-	TypeError             FrameType = "error"
+	// TypeTurnStart opens a turn the runner's harness began on its own.
+	TypeTurnStart FrameType = "turn.start"
+	TypeError     FrameType = "error"
 
 	// Bulk transfer control (payload rides on binary frames, see blob.go).
 	TypeBlobBegin FrameType = "blob.begin"
@@ -387,6 +389,31 @@ func (t *ToolEnd) Validate() error {
 	}
 	if t.DurationMS < 0 {
 		errs = append(errs, errors.New("tool.end: duration_ms must be non-negative"))
+	}
+	return errors.Join(errs...)
+}
+
+// TurnStart tells the gateway that the harness has started a turn nobody sent
+// a message for: a background task it left running has finished, and it is
+// acting on the result. Every other turn is opened by the gateway, which
+// mints the id and sends a message; here the runner mints the id and the
+// gateway opens a turn for it in the thread, so what the harness says has
+// somewhere to go. The turn then runs and ends like any other.
+type TurnStart struct {
+	ThreadID string `json:"thread"`
+	TurnID   string `json:"turn"`
+}
+
+func (*TurnStart) Type() FrameType      { return TypeTurnStart }
+func (*TurnStart) Direction() Direction { return DirUp }
+
+func (t *TurnStart) Validate() error {
+	var errs []error
+	if t.ThreadID == "" {
+		errs = append(errs, errors.New("turn.start: thread is required"))
+	}
+	if t.TurnID == "" {
+		errs = append(errs, errors.New("turn.start: turn is required"))
 	}
 	return errors.Join(errs...)
 }

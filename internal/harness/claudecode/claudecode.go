@@ -452,6 +452,9 @@ func (s *session) readStdout(r io.Reader) {
 			if ev.Subtype == "init" && ev.SessionID != "" {
 				s.emit(harness.Event{Kind: harness.EventSession, SessionID: ev.SessionID})
 			}
+			if ev.Subtype == "task_notification" {
+				s.emit(harness.Event{Kind: harness.EventBackground})
+			}
 
 		case "assistant":
 			var msg assistantMessage
@@ -518,9 +521,11 @@ func (s *session) readStdout(r io.Reader) {
 			// it reaches the message that woke it: ending the turn there left
 			// the real one running with no turn to report to, so its
 			// permission requests were refused and its answer was dropped.
-			if ev.Origin != nil && ev.Origin.Kind == originTaskNotification {
-				continue
-			}
+			//
+			// It does end a turn of the CLI's own, though: when a background
+			// task finishes with nothing else running, the CLI acts on it
+			// unprompted and closes that with this result.
+			background := ev.Origin != nil && ev.Origin.Kind == originTaskNotification
 			usage := harness.Usage{Model: lastModel, RateLimits: rateLimits}
 			rateLimits = nil
 			if ev.Model != "" {
@@ -534,6 +539,19 @@ func (s *session) readStdout(r io.Reader) {
 				usage.CacheReadTokens = ev.Usage.CacheReadInputTokens
 				usage.TTLHint = ev.Usage.CacheCreationTTL
 				usage.ProviderCostUSD = ev.TotalCost
+			}
+			if background {
+				if ev.IsError {
+					// A stop that landed on the CLI's own turn is spent here,
+					// not carried into the next real one.
+					s.interrupted.Store(false)
+				}
+				s.emit(harness.Event{
+					Kind:      harness.EventBackgroundDone,
+					SessionID: s.SessionID(),
+					Usage:     usage,
+				})
+				continue
 			}
 			// Emitting usage separately from done keeps "we have no numbers"
 			// distinguishable from "the numbers are zero".

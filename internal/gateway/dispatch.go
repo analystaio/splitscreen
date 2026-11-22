@@ -38,6 +38,8 @@ func (g *Gateway) dispatch(ctx context.Context, c *Conn, f protocol.Frame) {
 		go g.onCredentialRequest(ctx, c, fr)
 	case *protocol.Usage:
 		g.onUsage(c, fr)
+	case *protocol.TurnStart:
+		g.onTurnStart(ctx, c, fr)
 	case *protocol.Done:
 		g.onDone(ctx, c, fr)
 	case *protocol.Error:
@@ -380,8 +382,7 @@ func (g *Gateway) failTurns(runner string, before time.Time, reason, notice stri
 		}
 		g.clearWorking(turn.ThreadID)
 		g.settleStop(ctx, turn, false, false)
-		g.turnSlotFreed(ctx, runner)
-		g.endThreadTurn(ctx, turn.ThreadID)
+		g.releaseSlots(ctx, turn)
 		return true
 	})
 	return n
@@ -434,8 +435,7 @@ func (g *Gateway) sweepStrandedOnce(ctx context.Context, timeout time.Duration) 
 		g.turnEnded(ctx, turn, store.TurnError, "stranded: no activity past timeout")
 		g.clearWorking(turn.ThreadID)
 		g.settleStop(ctx, turn, false, false)
-		g.turnSlotFreed(ctx, turn.Runner)
-		g.endThreadTurn(ctx, turn.ThreadID)
+		g.releaseSlots(ctx, turn)
 		return true
 	})
 	return n
@@ -688,8 +688,76 @@ func (g *Gateway) onDone(ctx context.Context, c *Conn, fr *protocol.Done) {
 	_ = g.store.TouchThread(turn.ThreadID)
 	g.clearWorking(turn.ThreadID)
 	g.settleStop(ctx, turn, fr.Interrupted, noted)
+	g.releaseSlots(ctx, turn)
+}
+
+// releaseSlots gives back what a finished turn held: one of its runner's
+// concurrent turns and its thread's single turn. A turn the harness started on
+// its own took neither.
+func (g *Gateway) releaseSlots(ctx context.Context, turn *turnContext) {
+	if turn.Unprompted {
+		return
+	}
 	g.turnSlotFreed(ctx, turn.Runner)
 	g.endThreadTurn(ctx, turn.ThreadID)
+}
+
+// unpromptedPrompt stands in for the message an unprompted turn never had, in
+// the turn's record.
+const unpromptedPrompt = "(a background task finished)"
+
+// onTurnStart opens a turn for output a runner's harness is producing on its
+// own: a background task it left running has finished, after the turn that
+// started it ended, and the harness is acting on the result. Without a turn
+// that output had nowhere to go and was dropped, so a reply promised "when it
+// finishes" never arrived.
+//
+// The turn is opened in the thread the runner names, which must be one bound
+// to that runner. It does not queue and takes no slot: the work is already
+// happening, and all there is to decide is whether anyone sees it.
+func (g *Gateway) onTurnStart(ctx context.Context, c *Conn, fr *protocol.TurnStart) {
+	th, err := g.store.Thread(fr.ThreadID)
+	if err != nil || th.Runner != c.runner {
+		g.log.Warn("turn.start for a thread that is not this runner's",
+			"runner", c.runner, "thread", fr.ThreadID, "turn", fr.TurnID)
+		return
+	}
+	if !strings.HasPrefix(fr.TurnID, "turn_") {
+		g.log.Warn("turn.start with a malformed turn id", "runner", c.runner, "turn", fr.TurnID)
+		return
+	}
+	rc, ok := g.runnerConfig(c.runner)
+	if !ok {
+		return
+	}
+	turn := &turnContext{
+		TurnID:     fr.TurnID,
+		ThreadID:   th.ID,
+		Surface:    th.Surface,
+		Channel:    th.Channel,
+		Thread:     strings.TrimPrefix(th.ID, threadKey(th.Surface, th.Channel, "")),
+		Runner:     c.runner,
+		Persona:    personaFor(rc),
+		Activity:   rc.Display.EffectiveActivity(),
+		StartedAt:  time.Now(),
+		Prompt:     unpromptedPrompt,
+		Unprompted: true,
+	}
+	turn.touch()
+	if _, loaded := g.turns.LoadOrStore(turn.TurnID, turn); loaded {
+		g.log.Warn("turn.start for a turn that already exists", "runner", c.runner, "turn", fr.TurnID)
+		return
+	}
+	if err := g.store.StartTurn(store.Turn{
+		ID: turn.TurnID, ThreadID: th.ID, Channel: th.Channel, Runner: c.runner,
+	}); err != nil {
+		g.turns.Delete(turn.TurnID)
+		g.log.Error("start turn failed", "turn", turn.TurnID, "err", err)
+		return
+	}
+	g.log.Info("unprompted turn opened", "runner", c.runner, "thread", th.ID, "turn", turn.TurnID)
+	g.setWorkingForTurn(turn)
+	g.startTurnOutput(ctx, turn)
 }
 
 func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error) {
@@ -715,8 +783,7 @@ func (g *Gateway) onRunnerError(ctx context.Context, c *Conn, fr *protocol.Error
 		g.turns.Delete(fr.TurnID)
 		g.clearWorking(turn.ThreadID)
 		g.settleStop(ctx, turn, false, false)
-		g.turnSlotFreed(ctx, turn.Runner)
-		g.endThreadTurn(ctx, turn.ThreadID)
+		g.releaseSlots(ctx, turn)
 	}
 
 	if fr.Fatal {

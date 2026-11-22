@@ -26,7 +26,15 @@ const (
 	EventUsage    EventKind = "usage"
 	EventSession  EventKind = "session"
 	EventDone     EventKind = "done"
-	EventError    EventKind = "error"
+	// EventBackground says a background task the harness was running has
+	// reported in, so the harness may now start a turn nobody asked for.
+	EventBackground EventKind = "background"
+	// EventBackgroundDone ends a turn the harness started on its own to act
+	// on such a report. It carries that turn's Usage. It is not EventDone: a
+	// harness can report a stale task this way while a real turn is running,
+	// and that must not end the real turn.
+	EventBackgroundDone EventKind = "background_done"
+	EventError          EventKind = "error"
 )
 
 // Usage is normalized token accounting.
