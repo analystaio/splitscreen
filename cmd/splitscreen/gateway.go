@@ -85,7 +85,8 @@ delivery bug this architecture exists to eliminate.`,
 				// Clients are built on first use, so this costs nothing until a
 				// runner declaring wake is actually asleep. Runners that name no
 				// region use the Parameter Store region, then the ambient one.
-				Waker: wake.NewEC2(cfg.Gateway.SecretsSSM.Region),
+				Waker:   wake.NewEC2(cfg.Gateway.SecretsSSM.Region),
+				Version: Version,
 			})
 			if err != nil {
 				return err

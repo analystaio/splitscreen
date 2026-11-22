@@ -56,9 +56,10 @@ type userEntry struct {
 }
 
 type chanEntry struct {
-	name   string
-	at     time.Time
-	failed bool
+	name    string
+	private bool
+	at      time.Time
+	failed  bool
 }
 
 // errNoAnswer is a lookup that returned neither a result nor an error.
@@ -137,41 +138,46 @@ func userDisplay(u *slack.User) string {
 	return ""
 }
 
-// channel returns a channel's name (needs channels:read, or groups:read for a
-// private channel).
-func (d *directory) channel(ctx context.Context, id string) string {
+// channel returns a channel's name and whether it is private (needs
+// channels:read, or groups:read for a private channel). A channel that could
+// not be looked up reads as private: the flag decides how far a record of the
+// conversation may travel, so not knowing must not widen it.
+func (d *directory) channel(ctx context.Context, id string) (name string, private bool) {
 	if id == "" {
-		return ""
+		return "", true
 	}
 	d.mu.Lock()
 	e, ok := d.chans[id]
 	d.mu.Unlock()
 	if ok && d.fresh(e.at, e.failed) {
-		return e.name
+		return e.name, e.private
 	}
 
 	cctx, cancel := context.WithTimeout(ctx, d.timeout)
 	defer cancel()
 	ch, err := d.api.GetConversationInfoContext(cctx, &slack.GetConversationInfoInput{ChannelID: id})
 	if err != nil || ch == nil {
+		if !ok {
+			e.private = true // never seen: assume the narrower audience
+		}
 		e.at, e.failed = d.now(), true
 		d.mu.Lock()
 		d.chans[id] = e
 		d.mu.Unlock()
-		return e.name
+		return e.name, e.private
 	}
-	d.rememberChannel(id, ch.Name)
-	return ch.Name
+	d.rememberChannel(id, ch.Name, ch.IsPrivate)
+	return ch.Name, ch.IsPrivate
 }
 
 // rememberChannel records a name learned elsewhere (the membership check reads
 // the same API), so it costs no second call.
-func (d *directory) rememberChannel(id, name string) {
+func (d *directory) rememberChannel(id, name string, private bool) {
 	if name == "" {
 		return
 	}
 	d.mu.Lock()
-	d.chans[id] = chanEntry{name: name, at: d.now()}
+	d.chans[id] = chanEntry{name: name, private: private, at: d.now()}
 	d.mu.Unlock()
 }
 

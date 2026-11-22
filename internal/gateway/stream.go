@@ -607,7 +607,9 @@ func (s *stream) Close(ctx context.Context) {
 
 	s.mu.Lock()
 	s.closed = true
+	answer := strings.TrimSpace(s.body.String())
 	s.mu.Unlock()
+	s.turn.setAnswer(answer)
 
 	s.gw.streams.Delete(s.turn.TurnID)
 }

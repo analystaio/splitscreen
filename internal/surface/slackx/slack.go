@@ -208,6 +208,8 @@ func accept(ev *slackevents.MessageEvent, selfID, botID string) bool {
 // enrich adds the sender's name and email and the channel's name, so the agent
 // knows who is asking and where. Best effort: see directory.
 func (s *Surface) enrich(ctx context.Context, in *surface.Inbound) {
+	// Private until a lookup says otherwise; see surface.Inbound.Private.
+	in.Private = true
 	if s.dir == nil {
 		return
 	}
@@ -215,7 +217,7 @@ func (s *Surface) enrich(ctx context.Context, in *surface.Inbound) {
 		in.User.Display, in.User.Email = s.dir.user(ctx, in.User.ID)
 	}
 	if !in.IsDM {
-		in.ChannelName = s.dir.channel(ctx, in.Channel)
+		in.ChannelName, in.Private = s.dir.channel(ctx, in.Channel)
 	}
 }
 
@@ -629,7 +631,7 @@ func (s *Surface) Channel(ctx context.Context, id string) (surface.ChannelInfo, 
 
 	info.Name = ch.Name
 	if s.dir != nil {
-		s.dir.rememberChannel(id, ch.Name)
+		s.dir.rememberChannel(id, ch.Name, ch.IsPrivate)
 	}
 	if ch.IsMember {
 		info.Membership = surface.MembershipJoined

@@ -53,6 +53,11 @@ type Inbound struct {
 	// ChannelName is the human name of Channel ("box-foo"), when the surface
 	// could resolve it. Empty for a DM, or when resolution failed.
 	ChannelName string
+	// Private reports a conversation with a restricted audience: a private
+	// channel, a DM (always), or a channel the surface could not look up.
+	// Surfaces that cannot tell leave it false only for channels anyone in
+	// the workspace can read.
+	Private bool
 	// BotID is set when another bot sent the message (never this one). The
 	// gateway drops such messages unless the channel's route allows the bot by
 	// BotID or by User.ID. Surfaces without bots leave it empty.

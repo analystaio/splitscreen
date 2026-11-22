@@ -53,6 +53,12 @@ gateway:
   secret_expiry_warning: 336h        # warn 14 days before a token expires
   timezone: America/Los_Angeles      # schedules use this unless the request names a zone
 
+  # One OTLP log record per finished turn (README "Turn records"). Off without
+  # an endpoint; include_text also sends the prompt and the answer.
+  # telemetry:
+  #   logs_endpoint: http://127.0.0.1:4318/v1/logs
+  #   include_text: false
+
 # ---------------------------------------------------------------------------
 
 runners:

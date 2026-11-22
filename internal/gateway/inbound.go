@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +33,15 @@ type turnContext struct {
 	IsDM      bool
 	// ScheduleID is set on a scheduled run; see schedules.go.
 	ScheduleID string
+
+	// For the turn's telemetry record (telemetry.go). Prompt is the text sent
+	// to the runner.
+	Prompt      string
+	ChannelName string
+	Private     bool
+	toolCalls   atomic.Int64
+	recMu       sync.Mutex
+	rec         turnRecordState
 
 	// queued marks a turn whose message sits in the offline queue. Such a turn
 	// has not started anywhere, so a disconnect cannot have interrupted it:
@@ -290,6 +300,10 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 		IsDM:      in.IsDM,
 
 		ScheduleID: in.ScheduleID,
+
+		Prompt:      text,
+		ChannelName: in.ChannelName,
+		Private:     in.Private,
 	}
 	turn.touch()
 	if err := g.store.StartTurn(store.Turn{
@@ -398,7 +412,7 @@ func (g *Gateway) abandonTurn(ctx context.Context, turn *turnContext, reason str
 	g.clearWorking(turn.ThreadID)
 	g.settleStop(ctx, turn, false, false)
 	_ = g.store.FinishTurn(turn.TurnID, store.TurnError, reason, time.Since(turn.StartedAt).Milliseconds(), 0)
-	g.scheduleTurnEnded(ctx, turn, store.TurnError, reason)
+	g.turnEnded(ctx, turn, store.TurnError, reason)
 	g.endThreadTurn(ctx, turn.ThreadID)
 }
 
