@@ -308,6 +308,7 @@ func (s *Surface) handleInteraction(ctx context.Context, h surface.Handler, cb s
 			h.OnStop(ctx, surface.StopRequest{
 				Surface: s.Name(),
 				TurnID:  a.Value,
+				Inline:  a.BlockID == stopInlineBlock,
 				User:    surface.User{ID: cb.User.ID, Display: cb.User.Name},
 				Ref: surface.Ref{
 					Channel: cb.Channel.ID,

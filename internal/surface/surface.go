@@ -96,7 +96,10 @@ type StopRequest struct {
 	// StreamStopped reports that the surface already ended the turn's
 	// streaming message itself, so the gateway must not write to it again.
 	StreamStopped bool
-	User          User
+	// Inline reports that the control is part of the turn's own message, so
+	// that message must not be replaced to answer the press.
+	Inline bool
+	User   User
 	// Ref is the control that was pressed, so it can be updated in place.
 	Ref Ref
 }
@@ -126,6 +129,9 @@ type Post struct {
 	// be noise in a shared thread.
 	Ephemeral bool
 	User      string
+	// StopTurnID, on a post that opens a live stream, names the turn the
+	// message should carry a stop control for. Empty means no control.
+	StopTurnID string
 }
 
 // StepStatus is where one step of a turn has got to.
@@ -163,6 +169,14 @@ type StreamUpdate struct {
 	// ended, when that is worth saying ("Stopped by …"). Only the closing
 	// update carries it.
 	Footer string
+	// Draft is prose written but not yet placed: it becomes a step if more
+	// work follows and the answer if the turn ends. It is the whole draft, not
+	// a delta, and only a live stream is sent it — a message that is rewritten
+	// can show it and take it back, one that is appended to cannot.
+	Draft string
+	// Stopping, once set, replaces a live stream's stop control with this
+	// line: someone has asked for the turn to stop.
+	Stopping string
 }
 
 // Stream is a message built up as the turn runs.
@@ -191,6 +205,15 @@ var ErrStreamExpired = errors.New("stream expired")
 // streaming into a channel.
 type Streamer interface {
 	OpenStream(ctx context.Context, p Post) (Stream, error)
+}
+
+// LiveStreamer is implemented by surfaces that can keep a whole turn in one
+// message they rewrite as it runs: the steps, the prose and the stop control
+// together, opened before there is anything to show and never expiring. It is
+// the alternative to Streamer for surfaces whose native stream has to be cut
+// into several messages on a long turn.
+type LiveStreamer interface {
+	OpenLive(ctx context.Context, p Post) (Stream, error)
 }
 
 // Status is a transient indicator shown in a thread while something happens

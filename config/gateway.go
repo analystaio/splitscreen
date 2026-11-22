@@ -116,6 +116,13 @@ type Slack struct {
 	// answers a press with "stopping not available for this agent". Read on
 	// every turn, so a config reload switches it.
 	NativeStop bool `yaml:"native_stop"`
+	// SingleMessage keeps a whole turn in one message that is posted as soon
+	// as the turn starts and edited as it runs, with the steps, the answer and
+	// the Stop button together. Without it a turn uses Slack's streaming
+	// methods, which type prose in but end a message after ten minutes, so a
+	// long turn becomes a run of messages with the Stop button in another.
+	// Read on every turn, so a config reload switches it.
+	SingleMessage bool `yaml:"single_message"`
 }
 
 const (

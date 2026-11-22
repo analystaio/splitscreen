@@ -49,6 +49,55 @@ func (g *Gateway) canCancel(runner string) (*Conn, bool) {
 		conn.peerVer.Minor >= protocol.MinorTurnCancel
 }
 
+// liveTurn reports whether a turn's output is one live message: the surface
+// can keep one, and the config asks for it.
+func (g *Gateway) liveTurn(turn *turnContext) bool {
+	if !g.cfg.Load().Gateway.Slack.SingleMessage {
+		return false
+	}
+	srf, ok := g.surfaceFor(turn.Surface)
+	if !ok {
+		return false
+	}
+	_, ok = srf.(surface.LiveStreamer)
+	return ok
+}
+
+// stopOffered reports whether a turn gets a Stop control of ours at all.
+func (g *Gateway) stopOffered(turn *turnContext) bool {
+	// The surface draws its own stop button on a working thread; a second one
+	// would only be clutter.
+	if turn.Surface == "slack" && g.cfg.Load().Gateway.Slack.NativeStop {
+		return false
+	}
+	_, ok := g.canCancel(turn.Runner)
+	return ok
+}
+
+// startTurnOutput is called once a turn has been handed to its runner. A turn
+// kept in one live message gets that message now, Stop button included, so
+// the thread shows the turn was picked up before the model has said anything.
+// Any other turn gets a Stop control of its own after stopControlDelay.
+func (g *Gateway) startTurnOutput(ctx context.Context, turn *turnContext) {
+	if !g.liveTurn(turn) {
+		g.armStop(turn)
+		return
+	}
+	turn.stop.mu.Lock()
+	ended := turn.stop.ended
+	turn.stop.mu.Unlock()
+	if ended {
+		return
+	}
+	s := g.streamFor(turn)
+	s.OpenNow(ctx)
+	if !s.Live() {
+		// The message could not be posted and the turn fell back to plain
+		// posts, which carry no control.
+		g.armStop(turn)
+	}
+}
+
 // armStop schedules a dispatched turn's Stop control.
 func (g *Gateway) armStop(turn *turnContext) {
 	srf, ok := g.surfaceFor(turn.Surface)
@@ -59,12 +108,7 @@ func (g *Gateway) armStop(turn *turnContext) {
 	if !ok {
 		return
 	}
-	// The surface draws its own stop button on a working thread; a second one
-	// would only be clutter.
-	if turn.Surface == "slack" && g.cfg.Load().Gateway.Slack.NativeStop {
-		return
-	}
-	if _, ok := g.canCancel(turn.Runner); !ok {
+	if !g.stopOffered(turn) {
 		return
 	}
 	st := &turn.stop
@@ -192,9 +236,18 @@ func (g *Gateway) OnStop(ctx context.Context, r surface.StopRequest) {
 	v, ok := g.turns.Load(r.TurnID)
 	if !ok {
 		// Finished, or from a previous gateway process: either way the control
-		// is spent and should stop looking live.
+		// is spent and should stop looking live. One that is part of the turn's
+		// own message is answered privately instead: replacing that message
+		// would replace the turn's output.
 		if srf, ok := g.surfaceFor(r.Surface); ok {
-			_ = srf.Resolve(ctx, r.Ref, "This turn already finished.")
+			if r.Inline {
+				_, _ = srf.Post(ctx, surface.Post{
+					Channel: r.Ref.Channel, Thread: r.Ref.Thread,
+					Text: "This turn already finished.", Ephemeral: true, User: r.User.ID,
+				})
+			} else {
+				_ = srf.Resolve(ctx, r.Ref, "This turn already finished.")
+			}
 		}
 		return
 	}
@@ -296,6 +349,12 @@ func (g *Gateway) stopTurn(ctx context.Context, turn *turnContext, user surface.
 	if srf, ok := g.surfaceFor(turn.Surface); ok && ref != (surface.Ref{}) {
 		if err := srf.Resolve(ctx, ref, stoppingText(&user)); err != nil {
 			g.log.Warn("stop control update failed", "turn", turn.TurnID, "err", err)
+		}
+	}
+	if v, ok := g.streams.Load(turn.TurnID); ok {
+		if s := v.(*stream); s.Live() {
+			s.SetStopping(stoppingText(&user))
+			go s.flush(context.Background())
 		}
 	}
 	g.denyPromptsFor(ctx, turn, user)

@@ -362,7 +362,7 @@ func (g *Gateway) dispatchTurn(ctx context.Context, in surface.Inbound, runnerNa
 		return
 	}
 	g.setWorkingForTurn(turn)
-	g.armStop(turn)
+	g.startTurnOutput(ctx, turn)
 }
 
 // queueMessage persists a message for an offline runner and reports the depth
@@ -440,7 +440,7 @@ func (g *Gateway) drainQueue(ctx context.Context, conn *Conn) {
 			turn.touch()
 			turn.queued.Store(false)
 			g.setWorkingForTurn(turn)
-			g.armStop(turn)
+			g.startTurnOutput(ctx, turn)
 		}
 		if err := g.store.DeleteQueued(m.ID); err != nil {
 			g.log.Error("queue delete failed", "id", m.ID, "err", err)
