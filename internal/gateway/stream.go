@@ -47,6 +47,19 @@ type stream struct {
 	changed map[string]bool
 
 	native surface.Stream
+	// live marks a native stream that is the turn's one message, rewritten as
+	// the turn runs (surface.LiveStreamer). It is sent the draft and the stop
+	// state as well as the deltas; sentDraft and sentStopping are what it was
+	// last sent, so a flush with nothing new stays quiet.
+	live         bool
+	eager        bool
+	stopping     string
+	sentDraft    string
+	sentStopping string
+	// flushing serializes flushes: the ticker, a permission prompt and the
+	// turn's start can each ask for one, and two at once would open two
+	// messages.
+	flushing sync.Mutex
 	// fellBack latches once a streaming surface refuses or fails. Retrying an
 	// unsupported stream every tick would spend the turn's rate budget on
 	// errors.
@@ -283,9 +296,46 @@ func (s *stream) Posted() bool {
 	return s.posted
 }
 
+// OpenNow puts the turn's message up before the turn has produced anything,
+// on a surface that keeps a turn in one live message. Elsewhere it does
+// nothing: a native stream opened empty would leave a blank bubble if the turn
+// stayed silent, while a live message says the turn is working and is removed
+// if it has nothing to show.
+func (s *stream) OpenNow(ctx context.Context) {
+	if !s.gw.liveTurn(s.turn) {
+		return
+	}
+	s.mu.Lock()
+	s.eager = true
+	s.dirty = true
+	s.mu.Unlock()
+	s.flush(ctx)
+}
+
+// SetStopping records that someone asked for the turn to stop, which a live
+// message shows in place of its stop control.
+func (s *stream) SetStopping(text string) {
+	s.mu.Lock()
+	s.stopping = text
+	s.dirty = true
+	s.mu.Unlock()
+}
+
+// Live reports whether the turn's message is a live one carrying its own stop
+// control.
+func (s *stream) Live() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.live
+}
+
 // take collects everything not yet sent. Called under the lock.
 func (s *stream) take() surface.StreamUpdate {
 	u := surface.StreamUpdate{Text: s.body.String()[s.sent:]}
+	if s.live {
+		u.Draft = strings.TrimSpace(s.pending.String())
+		u.Stopping = s.stopping
+	}
 	for _, id := range s.order {
 		if s.changed[id] {
 			u.Steps = append(u.Steps, *s.steps[id])
@@ -351,6 +401,8 @@ func activityLine(st *surface.Step) string {
 func (s *stream) flush(ctx context.Context) { s.flushWith(ctx, false) }
 
 func (s *stream) flushWith(ctx context.Context, final bool) {
+	s.flushing.Lock()
+	defer s.flushing.Unlock()
 	s.mu.Lock()
 	if (!s.dirty && !final) || s.closed {
 		s.mu.Unlock()
@@ -362,6 +414,7 @@ func (s *stream) flushWith(ctx context.Context, final bool) {
 		s.pending.Reset()
 	}
 	native, fellBack, surfaceStopped := s.native, s.fellBack, s.surfaceStopped
+	eager := s.eager && !final
 	// Whether there is anything worth sending: unsent prose (body past sent) or
 	// any steps. A turn that produced neither has nothing to show.
 	nothingToSend := s.body.Len() <= s.sent && len(s.order) == 0
@@ -372,7 +425,7 @@ func (s *stream) flushWith(ctx context.Context, final bool) {
 	// bubble in the channel — the "sometimes Clank leaves an empty message" bug.
 	// The edit path already self-guards (it posts only non-empty text), and
 	// onDone reports "(no output)" for these, so silence is still handled.
-	if native == nil && nothingToSend {
+	if native == nil && nothingToSend && !eager {
 		return
 	}
 
@@ -419,12 +472,23 @@ func (s *stream) open(ctx context.Context, srf surface.Surface) surface.Stream {
 		s.mu.Unlock()
 		return nil
 	}
-	st, err := streamer.OpenStream(ctx, surface.Post{
+	post := surface.Post{
 		Channel: s.turn.Channel,
 		Thread:  s.turn.Thread,
 		Persona: s.turn.Persona,
 		User:    s.turn.User.ID,
-	})
+	}
+	var st surface.Stream
+	var err error
+	live := s.gw.liveTurn(s.turn)
+	if live {
+		if s.gw.stopOffered(s.turn) {
+			post.StopTurnID = s.turn.TurnID
+		}
+		st, err = srf.(surface.LiveStreamer).OpenLive(ctx, post)
+	} else {
+		st, err = streamer.OpenStream(ctx, post)
+	}
 	if err != nil {
 		if s.gw.streamWarned.CompareAndSwap(false, true) {
 			// Once. A workspace without streaming would otherwise log this on
@@ -439,6 +503,7 @@ func (s *stream) open(ctx context.Context, srf surface.Surface) surface.Stream {
 	}
 	s.mu.Lock()
 	s.native = st
+	s.live = live
 	s.ref = st.Ref()
 	s.posted = true
 	s.mu.Unlock()
@@ -461,7 +526,10 @@ func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) 
 	s.dirty = false
 	s.mu.Unlock()
 
-	if !final && u.Text == "" && len(u.Steps) == 0 {
+	s.mu.Lock()
+	unchanged := u.Draft == s.sentDraft && u.Stopping == s.sentStopping
+	s.mu.Unlock()
+	if !final && u.Text == "" && len(u.Steps) == 0 && unchanged {
 		return true, false
 	}
 
@@ -507,6 +575,7 @@ func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) 
 		s.dirty = true
 		s.fellBack = true
 		s.native = nil
+		s.live = false
 		s.posted = false
 		s.ref = surface.Ref{}
 		s.sent = 0
@@ -515,6 +584,7 @@ func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) 
 	}
 	s.mu.Lock()
 	s.commit()
+	s.sentDraft, s.sentStopping = u.Draft, u.Stopping
 	s.mu.Unlock()
 	return true, false
 }

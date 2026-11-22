@@ -201,6 +201,17 @@ config reload is enough); the gateway then posts no Stop control of its own.
 Until the app is subscribed, Slack shows its button but answers a press with
 "stopping not available for this agent", so leave `native_stop` off until then.
 
+By default a turn is written with Slack's streaming methods: prose types in,
+but Slack ends a streaming message ten minutes after it starts, so a long turn
+continues in further messages, and the Stop button is a message of its own.
+Set `gateway.slack.single_message: true` (a config reload is enough) to keep a
+whole turn in one message instead. It is posted as soon as the turn is handed
+to its runner and edited as the turn runs: the steps in one collapsible block,
+what the model is saying under them, and the Stop button at the bottom until
+the turn ends. Text then arrives about a second at a time rather than letter
+by letter, and only an answer longer than about 10,000 characters spills into
+a second message.
+
 `!status` and `!routes` also flag any routed channel the bot has not been
 invited into. That case is worth calling out because the platform simply never
 delivers those messages, making it indistinguishable from having no route at
