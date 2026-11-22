@@ -150,7 +150,7 @@ func (s *stream) demoteLocked() {
 	id := "prose-" + strconv.Itoa(s.synth)
 	title, detail := splitStepText(text)
 	s.order = append(s.order, id)
-	s.steps[id] = &surface.Step{ID: id, Title: title, Detail: detail, Status: surface.StepDone}
+	s.steps[id] = &surface.Step{ID: id, Title: title, Detail: detail, Status: surface.StepDone, Prose: true}
 	s.changed[id] = true
 	s.dirty = true
 }

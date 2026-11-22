@@ -153,6 +153,10 @@ type Step struct {
 	Title  string
 	Detail string
 	Status StepStatus
+	// Prose marks a step that is something the model said before going on to
+	// more work, rather than something it did. A surface may show the ones
+	// that open a turn as text instead of folding them in with the steps.
+	Prose bool
 	// Output is filled on failure, and carries the error rather than the
 	// result: a successful tool's output is the harness's business.
 	Output  string
