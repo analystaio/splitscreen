@@ -402,3 +402,65 @@ func TestExpiredStreamContinuesInAFreshOne(t *testing.T) {
 			len(srf.posts), len(srf.updates))
 	}
 }
+
+// A send happens with the lock released, so a tool can finish while the update
+// carrying its start is still in flight. What went out is cleared, but that end
+// is not: it is the surface's only chance to stop showing the step as running.
+func TestEndArrivingDuringASendIsNotLost(t *testing.T) {
+	s := &stream{
+		turn:    &turnContext{TurnID: "turn_1", Activity: config.ActivityTransient},
+		steps:   map[string]*surface.Step{},
+		changed: map[string]bool{},
+	}
+
+	s.StartStep("c1", "Bash", "df -h /")
+	s.mu.Lock()
+	u := s.take() // what the flush is about to send
+	s.mu.Unlock()
+	if len(u.Steps) != 1 || u.Steps[0].Status != surface.StepRunning {
+		t.Fatalf("first update = %+v, want c1 running", u.Steps)
+	}
+
+	// The tool finishes while that update is in flight.
+	s.EndStep("c1", true, "", 120)
+
+	s.mu.Lock()
+	s.commitSent(u)
+	next := s.take()
+	s.mu.Unlock()
+
+	if len(next.Steps) != 1 || next.Steps[0].ID != "c1" || next.Steps[0].Status != surface.StepDone {
+		t.Fatalf("next update = %+v, want c1 done still to send", next.Steps)
+	}
+
+	// Once the end has gone out, there is nothing left outstanding.
+	s.mu.Lock()
+	s.commitSent(next)
+	after := s.take()
+	s.mu.Unlock()
+	if len(after.Steps) != 0 {
+		t.Fatalf("committed step resent: %+v", after.Steps)
+	}
+}
+
+// Prose is committed by what actually went out, not by how long the body is
+// when the send returns.
+func TestCommitMarksOnlyTheTextThatWasSent(t *testing.T) {
+	s := &stream{
+		turn:    &turnContext{TurnID: "turn_1", Activity: config.ActivityTransient},
+		steps:   map[string]*surface.Step{},
+		changed: map[string]bool{},
+	}
+	s.body.WriteString("first half. ")
+	s.mu.Lock()
+	u := s.take()
+	s.mu.Unlock()
+	s.mu.Lock()
+	s.body.WriteString("second half.")
+	s.commitSent(u)
+	next := s.take()
+	s.mu.Unlock()
+	if next.Text != "second half." {
+		t.Fatalf("next text = %q, want the half that was never sent", next.Text)
+	}
+}

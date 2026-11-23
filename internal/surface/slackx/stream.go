@@ -180,6 +180,24 @@ func (st *stream) Append(ctx context.Context, u surface.StreamUpdate) error {
 // where the gateway resends them. Best effort: if Slack has already ended the
 // stream there is nothing left to tidy. Called under the lock.
 func (st *stream) retireLocked(ctx context.Context) {
+	chunks := st.settleLocked("continued below")
+	if title := st.finalTitleLocked(); title != "" {
+		chunks = append(chunks, slack.NewPlanUpdateChunk(title+" · continued below"))
+	}
+	if len(chunks) == 0 {
+		chunks = append(chunks, slack.NewMarkdownTextChunk("_continued below_"))
+	}
+	_, _, _ = st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID,
+		slack.MsgOptionChunks(chunks...))
+}
+
+// settleLocked completes the cards of steps still running. A message that is
+// about to be closed will never be updated again, so a card left in progress
+// spins forever under a turn that has finished — and the gateway cannot fix it
+// from its side: a step whose end it already sent is no longer a change to
+// send. note, when it is given, says on each card where the step went.
+// Called under the lock.
+func (st *stream) settleLocked(note string) []slack.StreamChunk {
 	var chunks []slack.StreamChunk
 	for id, step := range st.carded {
 		if step.Status != surface.StepRunning {
@@ -187,7 +205,7 @@ func (st *stream) retireLocked(ctx context.Context) {
 		}
 		chunk := slack.NewTaskUpdateChunk(id, truncateTitle(step.Title))
 		chunk.Status = slack.TaskCardStatusComplete
-		chunk.Details = truncate(joinDetail(step.Detail, "continued below"), 2000)
+		chunk.Details = truncate(joinDetail(step.Detail, note), 2000)
 		chunks = append(chunks, chunk)
 	}
 	var overflowRunning, overflowFailed bool
@@ -202,21 +220,17 @@ func (st *stream) retireLocked(ctx context.Context) {
 		if overflowFailed {
 			chunk.Status = slack.TaskCardStatusError
 		}
-		chunk.Details = "continued below"
+		chunk.Details = note
 		chunks = append(chunks, chunk)
 	}
-	if title := st.finalTitleLocked(); title != "" {
-		chunks = append(chunks, slack.NewPlanUpdateChunk(title+" · continued below"))
-	}
-	if len(chunks) == 0 {
-		chunks = append(chunks, slack.NewMarkdownTextChunk("_continued below_"))
-	}
-	_, _, _ = st.srf.api.StopStreamContext(ctx, st.ref.Channel, st.ref.ID,
-		slack.MsgOptionChunks(chunks...))
+	return chunks
 }
 
 func joinDetail(detail, note string) string {
-	if detail == "" {
+	switch {
+	case note == "":
+		return detail
+	case detail == "":
 		return note
 	}
 	return detail + "  ·  " + note
@@ -231,6 +245,9 @@ func (st *stream) Close(ctx context.Context, u surface.StreamUpdate) error {
 	st.closed = true
 
 	chunks := st.chunksLocked(u)
+	// After chunksLocked, so a step this very update finished is not settled a
+	// second time.
+	chunks = append(chunks, st.settleLocked("")...)
 	title := st.finalTitleLocked()
 	if title != "" {
 		chunks = append(chunks, slack.NewPlanUpdateChunk(title))

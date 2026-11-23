@@ -425,7 +425,7 @@ func (c *card) plan(ids []string) *slack.PlanBlock {
 	}
 	tasks := make([]*slack.TaskCardBlock, 0, len(own)+1)
 	for _, id := range own {
-		step := c.steps[id]
+		step := settled(c.steps[id])
 		task := slack.NewTaskCardBlock(id, truncateTitle(step.Title))
 		task.Status = taskStatus(step.Status)
 		task.Details = richText(detailFor(step))
@@ -453,6 +453,19 @@ func (c *card) plan(ids []string) *slack.PlanBlock {
 		tasks = append(tasks, task)
 	}
 	return slack.NewPlanBlock(c.finalTitle(ids)).WithTasks(tasks...)
+}
+
+// settled is a step as a finished turn renders it. The turn is over, so a step
+// still marked running never reported its end — a lost update, or one that
+// arrived after the last flush. Slack spins the plan's header while any task
+// card is in progress, and a finished message is never rewritten again, so
+// leaving it as it stands spins that header forever on a message that is
+// complete. Showing it as done is the truth of it: the turn finished.
+func settled(step surface.Step) surface.Step {
+	if step.Status == surface.StepRunning {
+		step.Status = surface.StepDone
+	}
+	return step
 }
 
 // finalTitle summarizes the finished plan: step count, failures, and how long

@@ -344,10 +344,28 @@ func (s *stream) take() surface.StreamUpdate {
 	return u
 }
 
-// commit marks a successful send. Called under the lock.
+// commit marks a successful send of the whole rendered state: the edit path
+// rewrites the message from scratch every time, so once an edit lands nothing
+// is outstanding. Called under the lock.
 func (s *stream) commit() {
 	s.sent = s.body.Len()
 	clear(s.changed)
+}
+
+// commitSent marks a successful send of one delta. Only what actually went out
+// is cleared, and a step is cleared only if it has not changed since: the send
+// happens with the lock released, so a tool that finishes while it is in flight
+// marks its step changed again, and clearing the whole set there would drop
+// that end. The step would then stand at running for the rest of the turn —
+// on a surface that renders status natively, a card spinning under a message
+// that has finished. Called under the lock.
+func (s *stream) commitSent(u surface.StreamUpdate) {
+	s.sent += len(u.Text)
+	for _, step := range u.Steps {
+		if cur, ok := s.steps[step.ID]; ok && *cur == step {
+			delete(s.changed, step.ID)
+		}
+	}
 }
 
 // render composes the whole message for a surface that cannot stream. On the
@@ -583,7 +601,7 @@ func (s *stream) pushNative(ctx context.Context, st surface.Stream, final bool) 
 		return false, false
 	}
 	s.mu.Lock()
-	s.commit()
+	s.commitSent(u)
 	s.sentDraft, s.sentStopping = u.Draft, u.Stopping
 	s.mu.Unlock()
 	return true, false
@@ -601,7 +619,7 @@ func (s *stream) finishStopped(ctx context.Context, srf surface.Surface, native 
 	u := s.take()
 	u.Footer = s.footer
 	footer := s.footer
-	s.commit()
+	s.commitSent(u)
 	s.mu.Unlock()
 	if err := native.Close(ctx, u); err == nil || footer == "" {
 		return
