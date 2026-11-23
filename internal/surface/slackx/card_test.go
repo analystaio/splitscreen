@@ -200,6 +200,34 @@ func TestCardPlanOverflow(t *testing.T) {
 	}
 }
 
+// A finished plan never spins. A step whose end was lost stands at running in
+// the card's state; the message is closed and will not be rewritten again, so
+// a task card left in progress would spin under a finished answer forever.
+func TestFinishedPlanHasNoRunningTask(t *testing.T) {
+	c := newCard(t, &fakeCardAPI{})
+	c.absorb(surface.StreamUpdate{Steps: []surface.Step{
+		{ID: "c1", Title: "Read", Status: surface.StepDone},
+		{ID: "c2", Title: "Bash", Status: surface.StepRunning}, // its end never arrived
+		{ID: "c3", Title: "Bash", Status: surface.StepFailed},
+	}})
+	plan := c.plan(c.order)
+	for _, task := range plan.Tasks {
+		if task.Status == slack.TaskCardStatusInProgress || task.Status == slack.TaskCardStatusPending {
+			t.Fatalf("task %s is %q in a finished plan", task.TaskID, task.Status)
+		}
+	}
+	if plan.Tasks[1].Status != slack.TaskCardStatusComplete {
+		t.Fatalf("unfinished step rendered %q, want complete", plan.Tasks[1].Status)
+	}
+	// A real failure still reads as one.
+	if plan.Tasks[2].Status != slack.TaskCardStatusError {
+		t.Fatalf("failed step rendered %q, want error", plan.Tasks[2].Status)
+	}
+	if !strings.Contains(plan.Title, "1 failed") {
+		t.Fatalf("plan title = %q, want one failure counted", plan.Title)
+	}
+}
+
 // Updates are paced: one that arrives too soon is carried by a timer rather
 // than sent at once or dropped.
 func TestCardPacesUpdatesAndCarriesTheLastState(t *testing.T) {

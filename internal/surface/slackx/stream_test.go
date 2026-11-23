@@ -66,6 +66,43 @@ func TestPlanIsTitledOnceAndStepsKeepTheirCard(t *testing.T) {
 	}
 }
 
+// Closing settles the cards of steps still running. The message leaves the
+// streaming state for good, so a card left in progress spins under a finished
+// answer forever — and the gateway cannot repair it: a step whose end it has
+// already sent is no longer a change to send.
+func TestClosingSettlesRunningCards(t *testing.T) {
+	st := newPlanStream()
+	st.chunksLocked(surface.StreamUpdate{Steps: []surface.Step{
+		{ID: "c1", Title: "Read", Detail: "gasheater.py", Status: surface.StepRunning},
+		{ID: "c2", Title: "Bash", Status: surface.StepRunning},
+	}})
+
+	// Only c2's end arrives; c1 stands at running.
+	closing := st.chunksLocked(surface.StreamUpdate{Steps: []surface.Step{
+		{ID: "c2", Title: "Bash", Status: surface.StepDone},
+	}})
+	closing = append(closing, st.settleLocked("")...)
+
+	var settled bool
+	for _, task := range taskChunks(closing) {
+		if task.Status == slack.TaskCardStatusInProgress {
+			t.Fatalf("task %s left in progress on the closing update", task.ID)
+		}
+		if task.ID == "c1" {
+			settled = true
+			if task.Status != slack.TaskCardStatusComplete {
+				t.Fatalf("c1 settled as %q, want complete", task.Status)
+			}
+			if task.Details != "gasheater.py" {
+				t.Fatalf("c1 details = %q, want its own detail and no note", task.Details)
+			}
+		}
+	}
+	if !settled {
+		t.Fatal("the step still running was not settled on close")
+	}
+}
+
 // Slack caps a plan at 50 tasks and rejects the whole append past it. Steps
 // beyond the reserve collapse into one shared card that counts them, shows the
 // newest, and aggregates status.
