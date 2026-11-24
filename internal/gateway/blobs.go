@@ -251,6 +251,7 @@ func (g *Gateway) deliverBlob(ctx context.Context, b *incomingBlob, fr *protocol
 		Thread:  b.turn.Thread,
 		Name:    rec.Name,
 		Mime:    rec.Mime,
+		Comment: b.meta.Comment,
 		Content: b.file,
 		Size:    rec.Size,
 	}); err != nil {

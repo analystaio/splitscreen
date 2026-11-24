@@ -110,3 +110,37 @@ func TestOlderRunnerGetsNoReceipt(t *testing.T) {
 		}
 	}
 }
+
+// A runner's comment is what turns "text, then image" into one message, so it
+// has to survive the trip to the surface. It used to be dropped: send-file
+// accepted --comment, and nothing carried it past the runner.
+func TestUploadCommentReachesTheSurface(t *testing.T) {
+	h := newHarness(t)
+	ws := h.connect(t, "s3cret")
+	msg := startTurn(t, h, ws)
+
+	send(t, ws, &protocol.BlobBegin{BlobID: "blob_c", ThreadID: msg.ThreadID,
+		TurnID: msg.TurnID, Name: "shot.png", Mime: "image/png", Size: 3,
+		Comment: "the login screen after the fix"})
+	chunk, err := protocol.EncodeChunk(protocol.ChunkHeader{BlobID: "blob_c"}, []byte("png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := ws.Write(ctx, websocket.MessageBinary, chunk); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte("png"))
+	send(t, ws, &protocol.BlobEnd{BlobID: "blob_c",
+		SHA256: hex.EncodeToString(sum[:]), OK: true})
+
+	if rc := readFrame[*protocol.BlobReceipt](t, ws); !rc.OK {
+		t.Fatalf("receipt = %+v", rc)
+	}
+	h.srf.mu.Lock()
+	defer h.srf.mu.Unlock()
+	if len(h.srf.comments) != 1 || h.srf.comments[0] != "the login screen after the fix" {
+		t.Fatalf("comments = %q", h.srf.comments)
+	}
+}

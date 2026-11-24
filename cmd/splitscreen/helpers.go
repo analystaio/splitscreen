@@ -287,6 +287,11 @@ func sendFileCmd() *cobra.Command {
 		Short: "Send a local file to the chat surface",
 		Long: `Streams a file to the surface through the gateway.
 
+With --comment the text is posted in the same message as the file, so a
+screenshot and the sentence explaining it arrive together rather than as two
+messages. Say it once: text in --comment and the same text in the reply reads
+as a duplicate.
+
 The runner holds no chat credentials, so this cannot post directly — which is
 also what makes the transfer auditable.`,
 		Args: cobra.ExactArgs(1),
@@ -312,6 +317,6 @@ also what makes the transfer auditable.`,
 	}
 	socketFlag(cmd, &socket)
 	cmd.Flags().StringVar(&thread, "thread", "", "thread to deliver into")
-	cmd.Flags().StringVar(&comment, "comment", "", "message to accompany the file")
+	cmd.Flags().StringVar(&comment, "comment", "", "text posted in the same message as the file")
 	return cmd
 }

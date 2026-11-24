@@ -17,6 +17,11 @@ const (
 	// message rather than chunking indefinitely.
 	MaxBlobSize = 50 << 20 // 50 MiB
 
+	// MaxBlobComment caps the message sent alongside an outbound file. Slack's
+	// initial_comment truncates well below this; the cap is here so a runaway
+	// agent cannot push an unbounded string through a control frame.
+	MaxBlobComment = 3000
+
 	// maxChunkHeader bounds the JSON header so a malformed length prefix cannot
 	// make the reader allocate arbitrarily.
 	maxChunkHeader = 4 << 10
