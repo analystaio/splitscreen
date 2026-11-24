@@ -17,6 +17,11 @@ import (
 // starts a send-file into a running turn. It returns the result channel.
 func sendFileAgainst(t *testing.T, gwProto string) (*fakeGateway, *websocket.Conn, chan error) {
 	t.Helper()
+	return sendFileWithComment(t, gwProto, "")
+}
+
+func sendFileWithComment(t *testing.T, gwProto, comment string) (*fakeGateway, *websocket.Conn, chan error) {
+	t.Helper()
 	g := newFakeGateway(t)
 	r, ws := connectedRunner(t, g)
 	g.reply(ws, &protocol.HelloAck{Protocol: gwProto, Runner: "alpha", Routes: []string{"C1"}})
@@ -42,7 +47,7 @@ func sendFileAgainst(t *testing.T, gwProto string) (*fakeGateway, *websocket.Con
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
-	go func() { done <- r.sendFile(context.Background(), "thread-1", path, "") }()
+	go func() { done <- r.sendFile(context.Background(), "thread-1", path, comment) }()
 	return g, ws, done
 }
 
@@ -110,5 +115,45 @@ func TestSendFileGivesUpOnAMissingReceipt(t *testing.T) {
 	err := result(t, done)
 	if err == nil || !strings.Contains(err.Error(), "no delivery receipt") {
 		t.Fatalf("want a missing-receipt error, got %v", err)
+	}
+}
+
+// The comment belongs on blob.begin: it is what lets the gateway post the file
+// and its text as one message. send-file used to accept --comment and drop it.
+func TestSendFileCarriesTheComment(t *testing.T) {
+	g, ws, done := sendFileWithComment(t, protocol.Version, "the login screen after the fix")
+	begin, ok := await[*protocol.BlobBegin](g)
+	if !ok {
+		t.Fatal("no blob.begin")
+	}
+	if begin.Comment != "the login screen after the fix" {
+		t.Errorf("comment = %q", begin.Comment)
+	}
+	end, ok := await[*protocol.BlobEnd](g)
+	if !ok {
+		t.Fatal("no blob.end")
+	}
+	g.reply(ws, &protocol.BlobReceipt{BlobID: end.BlobID, OK: true})
+	if err := result(t, done); err != nil {
+		t.Fatalf("send-file: %v", err)
+	}
+}
+
+// An older gateway ignores the field and posts the file bare, which would lose
+// the sentence explaining it. Better to say so than to drop it silently.
+func TestSendFileRefusesACommentAnOlderGatewayWouldDrop(t *testing.T) {
+	_, _, done := sendFileWithComment(t, "1.5", "the login screen after the fix")
+	err := result(t, done)
+	if err == nil || !strings.Contains(err.Error(), "cannot post a comment") {
+		t.Fatalf("want a refusal, got %v", err)
+	}
+}
+
+func TestSendFileRejectsAnOversizeComment(t *testing.T) {
+	_, _, done := sendFileWithComment(t, protocol.Version,
+		strings.Repeat("x", protocol.MaxBlobComment+1))
+	err := result(t, done)
+	if err == nil || !strings.Contains(err.Error(), "over the") {
+		t.Fatalf("want a cap error, got %v", err)
 	}
 }

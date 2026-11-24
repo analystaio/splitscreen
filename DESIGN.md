@@ -779,6 +779,15 @@ Each side checks the other's minor first: a gateway sends receipts only to 1.4+
 runners, and a runner waits only on a 1.4+ gateway. Every undelivered file is also
 logged as a warning on the gateway, in addition to its row in the blobs table.
 
+**One message, not two (1.6).** `blob.begin` carries an optional `comment`, which the
+gateway passes to the surface as the file's accompanying text (Slack's
+`initial_comment`). Without it a file posts bare and the sentence explaining it is a
+separate message, so every screenshot read as "text, then image". The text is converted
+to the surface's markup like any other posted string, and capped at 3000 bytes so a
+control frame cannot carry an unbounded string. A runner refuses a comment when the
+gateway is older than 1.6: that gateway would ignore the field and post the file bare,
+and losing the text silently is worse than saying so.
+
 Above a cap (~50MB), reject with a clear in-thread message rather than chunking. Add an
 object-store handoff only if real usage demands it.
 

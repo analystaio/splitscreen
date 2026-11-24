@@ -30,6 +30,7 @@ type fakeSurface struct {
 	prompts   []surface.Prompt
 	resolved  []string
 	uploads   []string
+	comments  []string
 	handler   surface.Handler
 	channels  map[string]surface.ChannelInfo
 	seq       int
@@ -105,6 +106,7 @@ func (f *fakeSurface) Upload(_ context.Context, u surface.Upload) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.uploads = append(f.uploads, u.Name+":"+string(body))
+	f.comments = append(f.comments, u.Comment)
 	return nil
 }
 

@@ -169,6 +169,17 @@ func (r *Runner) sendFile(ctx context.Context, threadID, path, comment string) e
 			path, info.Size(), protocol.MaxBlobSize)
 	}
 
+	if len(comment) > protocol.MaxBlobComment {
+		return fmt.Errorf("runner: comment is %d bytes, over the %d cap",
+			len(comment), protocol.MaxBlobComment)
+	}
+	// An older gateway drops an unknown field, which would upload the file
+	// bare and lose the sentence that explains it. Say so instead: the caller
+	// can post the text itself.
+	if comment != "" && r.gatewayMinor.Load() < protocol.MinorBlobComment {
+		return fmt.Errorf("runner: this gateway cannot post a comment with a file; send the text as a reply instead")
+	}
+
 	blobID := "blob_" + randomID()
 	begin := &protocol.BlobBegin{
 		BlobID:   blobID,
@@ -177,6 +188,7 @@ func (r *Runner) sendFile(ctx context.Context, threadID, path, comment string) e
 		Name:     filepath.Base(path),
 		Mime:     guessMime(path),
 		Size:     info.Size(),
+		Comment:  comment,
 	}
 	if err := r.send(ctx, begin); err != nil {
 		return err

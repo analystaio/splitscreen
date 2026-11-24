@@ -974,6 +974,10 @@ type BlobBegin struct {
 	Mime     string `json:"mime,omitempty"`
 	Size     int64  `json:"size"`
 	SHA256   string `json:"sha256,omitempty"`
+	// Comment accompanies the file in the surface's own message, so a file
+	// and the sentence explaining it arrive as one message instead of two.
+	// Outbound only: an inbound attachment's text is the user's message.
+	Comment string `json:"comment,omitempty"`
 }
 
 func (*BlobBegin) Type() FrameType      { return TypeBlobBegin }
@@ -992,6 +996,10 @@ func (b *BlobBegin) Validate() error {
 	}
 	if err := safeFileName(b.Name); err != nil {
 		errs = append(errs, fmt.Errorf("blob.begin: name %q: %w", b.Name, err))
+	}
+	if len(b.Comment) > MaxBlobComment {
+		errs = append(errs, fmt.Errorf("blob.begin: comment is %d bytes, over the %d cap",
+			len(b.Comment), MaxBlobComment))
 	}
 	return errors.Join(errs...)
 }

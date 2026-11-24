@@ -551,14 +551,18 @@ func (s *Surface) Resolve(ctx context.Context, ref surface.Ref, text string) err
 
 func (s *Surface) Upload(ctx context.Context, u surface.Upload) error {
 	// UploadFileContext performs the three-step external upload flow; the old
-	// files.upload endpoint is retired.
+	// files.upload endpoint is retired. InitialComment is what makes the file
+	// and its text one message, and it is mrkdwn, so it needs the same
+	// conversion every other posted string gets. files.completeUploadExternal
+	// also takes blocks, but only instead of a comment, so the richer layout
+	// would cost the plain-text fallback; not worth it for one sentence.
 	_, err := s.api.UploadFileContext(ctx, slack.UploadFileParameters{
 		Channel:         u.Channel,
 		Reader:          u.Content,
 		Filename:        u.Name,
 		FileSize:        int(u.Size),
 		ThreadTimestamp: u.Thread,
-		InitialComment:  u.Comment,
+		InitialComment:  ToMrkdwn(u.Comment),
 	})
 	if err != nil {
 		return fmt.Errorf("slack: upload: %w", err)
