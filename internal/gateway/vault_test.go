@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -256,7 +257,7 @@ func TestEgressAttachesKeyAndCleansUp(t *testing.T) {
 
 	resp, err := vh.call(t, &protocol.EgressRequest{
 		Secret: "vendor", Method: "POST", Path: "/v1/orders?limit=5", Body: []byte(`{"a":1}`),
-		Headers:  map[string][]string{"Authorization": {"Bearer agent-supplied"}, "Content-Type": {"application/json"}, "Cookie": {"x=1"}},
+		Headers:  map[string][]string{"Authorization": {"Bearer agent-supplied"}, "Content-Type": {"application/json"}, "Cookie": {"x=1"}, "Accept-Encoding": {"gzip"}},
 		ThreadID: turn.ThreadID, TurnID: turn.TurnID,
 	}, turn)
 	if err != nil {
@@ -266,7 +267,7 @@ func TestEgressAttachesKeyAndCleansUp(t *testing.T) {
 	if got := r.Header.Get("Authorization"); got != "Bearer sk_test_SECRET" {
 		t.Fatalf("upstream saw Authorization %q", got)
 	}
-	if r.Header.Get("Cookie") != "" || r.URL.Path != "/v1/orders" || r.URL.Query().Get("limit") != "5" || r.Host != "api.vendor.test" {
+	if r.Header.Get("Cookie") != "" || r.Header.Get("Accept-Encoding") == "identity" || r.URL.Path != "/v1/orders" || r.URL.Query().Get("limit") != "5" || r.Host != "api.vendor.test" {
 		t.Fatalf("upstream request %s %s host=%s cookie=%q", r.Method, r.URL, r.Host, r.Header.Get("Cookie"))
 	}
 	if resp.Status != 201 || strings.Contains(string(resp.Body), "sk_test_SECRET") ||
@@ -407,5 +408,38 @@ func TestListSecretsExplainsUse(t *testing.T) {
 	}
 	if strings.Contains(out, "sk_test") {
 		t.Fatal("value listed")
+	}
+}
+
+// An API that gzips its answer must still have an echoed key redacted: the
+// agent's Accept-Encoding is dropped, so the client decompresses first.
+func TestEgressRedactsCompressedResponses(t *testing.T) {
+	vh := newVaultHarness(t)
+	gz := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			_, _ = w.Write([]byte("plain:" + r.Header.Get("Authorization")))
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		_, _ = zw.Write([]byte("gz:" + r.Header.Get("Authorization")))
+		_ = zw.Close()
+	}))
+	defer gz.Close()
+	client, addr := gz.Client(), strings.TrimPrefix(gz.URL, "https://")
+	egressDo = func(req *http.Request) (*http.Response, error) {
+		r2 := req.Clone(req.Context())
+		r2.URL.Host = addr
+		return client.Do(r2)
+	}
+	addSecret(t, vh, memberTurn(), "vendor", url.Values{"users": {"any"}})
+	turn := liveTurn(vh, "UMEMBER")
+	resp, err := vh.call(t, &protocol.EgressRequest{Secret: "vendor", ThreadID: turn.ThreadID, TurnID: turn.TurnID,
+		Headers: map[string][]string{"Accept-Encoding": {"gzip"}}}, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(resp.Body) != "gz:Bearer [secret:vendor]" {
+		t.Fatalf("body %q", resp.Body)
 	}
 }

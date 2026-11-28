@@ -305,6 +305,9 @@ var droppedRequestHeaders = []string{
 	"Authorization", "Proxy-Authorization", "Cookie", "Host", "Connection", "Keep-Alive",
 	"Proxy-Connection", "Te", "Trailer", "Transfer-Encoding", "Upgrade", "Content-Length",
 	"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Real-Ip",
+	// Left to the client, which then decompresses before redaction sees the
+	// body. A compressed body passed through would hide an echoed key.
+	"Accept-Encoding",
 }
 
 var droppedResponseHeaders = []string{
