@@ -45,8 +45,12 @@ const createChannelToolDef = `{
 // included. Discovery is never filtered, as for proxied servers: a refused
 // call explains itself, a missing tool does not.
 func (g *Gateway) surfaceToolList() json.RawMessage {
-	return json.RawMessage(`{"tools":[` + createChannelToolDef + `,` +
-		scheduleToolDefs(g.cfg.Load().Gateway.Timezone) + `]}`)
+	cfg := g.cfg.Load()
+	tools := createChannelToolDef + `,` + scheduleToolDefs(cfg.Gateway.Timezone)
+	if cfg.Gateway.Vault.Enabled() {
+		tools += `,` + secretToolDefs
+	}
+	return json.RawMessage(`{"tools":[` + tools + `]}`)
 }
 
 type createChannelArgs struct {
@@ -82,6 +86,12 @@ func (g *Gateway) callSurfaceTool(ctx context.Context, runner string, turn *turn
 		return g.scheduleUpdate(ctx, runner, turn, fr.Args)
 	case scheduleDeleteTool:
 		return g.scheduleDelete(ctx, runner, turn, fr.Args)
+	case requestSecretTool:
+		return g.requestSecret(ctx, runner, turn, fr.Args)
+	case listSecretsTool:
+		return g.listSecrets(runner, turn)
+	case revokeSecretTool:
+		return g.revokeSecret(runner, turn, fr.Args)
 	}
 	return nil, fmt.Errorf("unknown tool %q on server %q", fr.Tool, fr.Server)
 }

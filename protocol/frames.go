@@ -25,6 +25,7 @@ const (
 	TypeMCPResponse        FrameType = "mcp.response"
 	TypeCredentialGrant    FrameType = "credential.grant"
 	TypeTurnCancel         FrameType = "turn.cancel"
+	TypeEgressResponse     FrameType = "egress.response"
 
 	// Runner -> gateway.
 	TypeTextDelta         FrameType = "text.delta"
@@ -34,6 +35,7 @@ const (
 	TypePermissionRequest FrameType = "permission.request"
 	TypeMCPCall           FrameType = "mcp.call"
 	TypeCredentialRequest FrameType = "credential.request"
+	TypeEgressRequest     FrameType = "egress.request"
 	TypeUsage             FrameType = "usage"
 	TypeDone              FrameType = "done"
 	// TypeTurnStart opens a turn the runner's harness began on its own.
@@ -156,6 +158,13 @@ type Hello struct {
 	// otherwise look identical from the gateway. Optional: an older runner
 	// sends none and gets the grace-period handling.
 	Instance string `json:"instance,omitempty"`
+	// Hardened reports that the runner checked its own install and found the
+	// agent cannot change it: a system service, root-owned binaries, ptrace
+	// restricted. Only then can it attribute a request to the turn that made
+	// it (see EgressRequest.Attributed). HardenedProblems says what failed
+	// otherwise, for status output. Optional (1.7+).
+	Hardened         bool     `json:"hardened,omitempty"`
+	HardenedProblems []string `json:"hardened_problems,omitempty"`
 }
 
 func (*Hello) Type() FrameType      { return TypeHello }

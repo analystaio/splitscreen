@@ -68,6 +68,8 @@ type Gateway struct {
 	channels channelCache
 	grants   *grantStore
 
+	sealers sealerCache // the vault key, parsed (vault.go)
+
 	// heldFiles keeps attachments for messages queued while their runner is
 	// offline (turn id -> []surface.File), relayed when the queue drains. In
 	// memory only: a file handle is a closure over the surface credential, so
@@ -349,7 +351,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 	}
 
 	var wg sync.WaitGroup
-	errCh := make(chan error, len(g.surfaces)+1)
+	errCh := make(chan error, len(g.surfaces)+2)
 
 	for name, s := range g.surfaces {
 		wg.Add(1)
@@ -367,6 +369,16 @@ func (g *Gateway) Run(ctx context.Context) error {
 		defer wg.Done()
 		g.watchSecretExpiry(ctx)
 	}()
+
+	if g.cfg.Load().Gateway.Intake.Enabled() {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := g.ServeIntake(ctx); err != nil && ctx.Err() == nil {
+				errCh <- fmt.Errorf("intake: %w", err)
+			}
+		}()
+	}
 
 	wg.Add(1)
 	go func() {

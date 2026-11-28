@@ -56,7 +56,65 @@ type Gateway struct {
 	// Telemetry exports a record of every finished turn over OTLP. Off unless
 	// an endpoint is set.
 	Telemetry Telemetry `yaml:"telemetry"`
+
+	// Vault, Intake and Egress make up the secrets broker: people hand the
+	// gateway API keys through a one-time link, and agents use them through
+	// their runner's egress proxy without ever seeing them. See
+	// docs/secrets-broker.md. Off unless vault.key_secret is set.
+	Vault  Vault  `yaml:"vault"`
+	Intake Intake `yaml:"intake"`
+	Egress Egress `yaml:"egress"`
 }
+
+// Vault holds the key that encrypts stored secrets.
+type Vault struct {
+	// KeySecret names a secret in the gateway's own backend holding 32 random
+	// bytes, base64. A copy of the store without it reveals nothing.
+	KeySecret string `yaml:"key_secret"`
+}
+
+// Enabled reports whether the vault is configured.
+func (v Vault) Enabled() bool { return v.KeySecret != "" }
+
+// Intake modes: how people reach the page where they paste a key.
+const (
+	// IntakeLinkOnly trusts the one-time link alone: single use, short-lived,
+	// and sent privately to the person who asked.
+	IntakeLinkOnly = "link-only"
+	// IntakeTailnet expects the page behind `tailscale serve`, and also
+	// requires the Tailscale-User-Login header to be the person the link was
+	// made for (see Config.People).
+	IntakeTailnet = "tailnet"
+)
+
+// Intake is the page where a person pastes a secret.
+type Intake struct {
+	// Listen is the intake page's own address, separate from the runner
+	// endpoint. Bind to loopback and put the reachability layer (tailscale
+	// serve, an access proxy) in front. Empty disables intake.
+	Listen string `yaml:"listen"`
+	// PublicURL is where people reach Listen, e.g.
+	// "https://gateway.example.ts.net:8444". Links are built from it.
+	PublicURL string `yaml:"public_url"`
+	Mode      string `yaml:"mode"`
+	// LinkTTL bounds how long a link works. Default 15m.
+	LinkTTL Duration `yaml:"link_ttl"`
+}
+
+// Enabled reports whether the intake page is configured.
+func (i Intake) Enabled() bool { return i.Listen != "" }
+
+// Egress bounds the calls the gateway makes for runners.
+type Egress struct {
+	// Timeout per upstream call. Default 60s.
+	Timeout Duration `yaml:"timeout"`
+	// DenyHosts are always refused, whatever a secret allows: cloud metadata
+	// endpoints by default, so a mistaken host can never reach them.
+	DenyHosts []string `yaml:"deny_hosts"`
+}
+
+// DefaultEgressDenyHosts are refused even when DenyHosts is set.
+var DefaultEgressDenyHosts = []string{"169.254.169.254", "metadata.google.internal", "metadata", "fd00:ec2::254"}
 
 // Telemetry configures the OTLP export of turn records: one log record per
 // finished turn, carrying where it happened, who asked, which runner answered,
@@ -211,6 +269,15 @@ func (c *Config) applyGatewayDefaults() {
 	if g.Forge.Kind == "" && (g.Forge.AppID != "" || g.Forge.KeyFile != "") {
 		g.Forge.Kind = ForgeGitHubApp
 	}
+	if g.Intake.Mode == "" {
+		g.Intake.Mode = IntakeLinkOnly
+	}
+	if g.Intake.LinkTTL == 0 {
+		g.Intake.LinkTTL = Duration(15 * time.Minute)
+	}
+	if g.Egress.Timeout == 0 {
+		g.Egress.Timeout = Duration(60 * time.Second)
+	}
 }
 
 func (c *Config) validateGateway(p *problems) {
@@ -240,6 +307,7 @@ func (c *Config) validateGateway(p *problems) {
 		p.addf("gateway.timezone %q is not an IANA time zone name", g.Timezone)
 	}
 	validateTelemetry(g.Telemetry, p)
+	c.validateBroker(p)
 
 	switch g.Forge.Kind {
 	case "":
@@ -352,6 +420,7 @@ func (c *Config) SecretRefs() []string {
 	add(c.Gateway.Slack.BotTokenSecret)
 	add(c.Gateway.Slack.AppTokenSecret)
 	add(c.Gateway.Forge.TokenSecret)
+	add(c.Gateway.Vault.KeySecret)
 	for name, r := range c.Runners {
 		if r == nil {
 			continue
@@ -390,5 +459,43 @@ func validateTelemetry(t Telemetry, p *problems) {
 	}
 	if t.MaxTextBytes < 0 {
 		p.addf("gateway.telemetry.max_text_bytes must not be negative")
+	}
+}
+
+func (c *Config) validateBroker(p *problems) {
+	g := c.Gateway
+	if g.Intake.Enabled() {
+		if !g.Vault.Enabled() {
+			p.addf("gateway.intake needs gateway.vault.key_secret: intake stores what people paste")
+		}
+		u, err := url.Parse(g.Intake.PublicURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			p.addf("gateway.intake.public_url %q must be an https URL: links carry a one-time secret", g.Intake.PublicURL)
+		}
+		switch g.Intake.Mode {
+		case IntakeLinkOnly:
+		case IntakeTailnet:
+			if len(c.People) == 0 {
+				p.warnf("gateway.intake.mode is tailnet but people is empty: every submission will be refused")
+			}
+		default:
+			p.addf("gateway.intake.mode %q: want %q or %q", g.Intake.Mode, IntakeLinkOnly, IntakeTailnet)
+		}
+		if g.Intake.LinkTTL.Duration() <= 0 || g.Intake.LinkTTL.Duration() > 24*time.Hour {
+			p.addf("gateway.intake.link_ttl must be between 0 and 24h")
+		}
+	}
+	if g.Egress.Timeout.Duration() <= 0 {
+		p.addf("gateway.egress.timeout must be positive")
+	}
+	for name, r := range c.Runners {
+		if r != nil && r.Egress && !g.Vault.Enabled() {
+			p.addf("runner %q: egress needs gateway.vault.key_secret", name)
+		}
+	}
+	for id, person := range c.People {
+		if id == "" || person.Tailnet == "" {
+			p.addf("people: every entry needs a user id and a tailnet login")
+		}
 	}
 }

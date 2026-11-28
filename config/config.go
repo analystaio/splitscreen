@@ -46,6 +46,10 @@ type Config struct {
 	// each pinned to a ref. A bundle enables plugins as "name@marketplace".
 	Marketplaces map[string]*Marketplace `yaml:"marketplaces"`
 
+	// People maps a surface user id to the same person's identity elsewhere,
+	// for checks that need both, such as the tailnet intake mode.
+	People map[string]Person `yaml:"people"`
+
 	// Warnings are findings that do not block loading: the config runs, but
 	// probably is not what someone meant. Populated by Validate.
 	Warnings []string `yaml:"-"`
@@ -145,6 +149,22 @@ type Runner struct {
 	// (per-task boxes) are then as reachable as ones that never sleep: the
 	// message is held, the host boots, the runner connects, the queue drains.
 	Wake *Wake `yaml:"wake"`
+
+	// Egress lets this runner's agent use vault secrets through its egress
+	// proxy. Off by default.
+	Egress bool `yaml:"egress"`
+	// Hardened is the operator's statement that this runner is installed so
+	// its agent cannot change it (docs/secrets-broker.md §8.4). The runner
+	// must also find that true of itself. Both are needed before a secret
+	// restricted to its owner works on this runner.
+	Hardened bool `yaml:"hardened"`
+}
+
+// Person is one human's identities outside the chat surface.
+type Person struct {
+	// Tailnet is their Tailscale login, as `tailscale serve` reports it in
+	// the Tailscale-User-Login header.
+	Tailnet string `yaml:"tailnet"`
 }
 
 // Wake names the machine to start for an offline runner. It is explicit rather

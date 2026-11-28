@@ -36,6 +36,8 @@ func (g *Gateway) dispatch(ctx context.Context, c *Conn, f protocol.Frame) {
 		go g.onMCPCall(ctx, c, fr)
 	case *protocol.CredentialRequest:
 		go g.onCredentialRequest(ctx, c, fr)
+	case *protocol.EgressRequest:
+		go g.onEgressRequest(ctx, c, fr)
 	case *protocol.Usage:
 		g.onUsage(c, fr)
 	case *protocol.TurnStart:
