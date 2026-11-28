@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -48,7 +49,17 @@ chat credentials, no forge credentials, and no routing configuration.`,
 
 			// Prefer a file or the environment over a flag: a token in argv is
 			// visible in the process table to every user on the box.
-			if token == "" && tokenFile != "" {
+			tokenFrom := ""
+			if token == "" && tokenFile == "-" {
+				// The descriptor systemd opened for us (StandardInput=file:):
+				// read it as is, since re-opening a root-only file would fail.
+				raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+				if err != nil {
+					return fmt.Errorf("runner: read token from stdin: %w", err)
+				}
+				token, tokenFrom = strings.TrimSpace(string(raw)), "/dev/stdin"
+			} else if token == "" && tokenFile != "" {
+				tokenFrom = tokenFile
 				raw, err := os.ReadFile(tokenFile)
 				if err != nil {
 					return fmt.Errorf("runner: read token file: %w", err)
@@ -72,6 +83,7 @@ chat credentials, no forge credentials, and no routing configuration.`,
 				Name:               name,
 				Gateway:            gatewayURL,
 				Token:              token,
+				TokenFile:          tokenFrom,
 				Fingerprint:        fingerprint,
 				Insecure:           insecure,
 				Cwd:                cwd,
@@ -102,7 +114,7 @@ chat credentials, no forge credentials, and no routing configuration.`,
 	f.StringVar(&name, "name", os.Getenv("SPLITSCREEN_RUNNER"), "runner name, as declared in the gateway config")
 	f.StringVar(&gatewayURL, "gateway", os.Getenv("SPLITSCREEN_GATEWAY"), "gateway URL, e.g. wss://10.0.0.5:8443")
 	f.StringVar(&token, "token", "", "enrollment token (prefer --token-file)")
-	f.StringVar(&tokenFile, "token-file", "", "file containing the enrollment token")
+	f.StringVar(&tokenFile, "token-file", "", `file containing the enrollment token, or "-" for stdin`)
 	f.StringVar(&fingerprint, "fingerprint", os.Getenv("SPLITSCREEN_GATEWAY_FINGERPRINT"),
 		"pinned sha256 fingerprint of the gateway certificate")
 	f.BoolVar(&insecure, "insecure", false, "skip TLS verification (development only)")

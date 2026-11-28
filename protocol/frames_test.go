@@ -47,6 +47,17 @@ func TestRoundTrip(t *testing.T) {
 		{"credential.grant", DirDown, &CredentialGrant{
 			RequestID: "cr1", Kind: CredentialForge, Username: "x-access-token", Value: "ghs_xxx",
 		}},
+		{"egress.request", DirUp, &EgressRequest{
+			RequestID: "e1", Secret: "vendor-api", Method: "POST", Path: "/v2/orders?limit=5",
+			Headers: map[string][]string{"Content-Type": {"application/json"}}, Body: []byte(`{"a":1}`),
+			ThreadID: "t1", TurnID: "turn1", Attributed: true,
+		}},
+		{"egress.response", DirDown, &EgressResponse{
+			RequestID: "e1", Status: 200, Headers: map[string][]string{"Content-Type": {"application/json"}}, Body: []byte(`{}`),
+		}},
+		{"egress.response error", DirDown, &EgressResponse{
+			RequestID: "e1", Error: &RemoteError{Code: "denied", Message: "owner only"},
+		}},
 		{"usage", DirUp, &Usage{
 			ThreadID: "t1", TurnID: "turn1", Model: "claude-opus-5",
 			InputTokens: 100, CacheWriteTokens: 20, CacheReadTokens: 9000, OutputTokens: 400,
@@ -111,7 +122,7 @@ func TestEveryKnownTypeIsRoundTripped(t *testing.T) {
 	for _, ft := range []FrameType{
 		TypeHello, TypeHelloAck, TypeMessage, TypeTextDelta, TypeThought, TypeToolStart, TypeToolEnd,
 		TypePermissionRequest, TypePermissionResponse, TypeMCPCall, TypeMCPResponse,
-		TypeCredentialRequest, TypeCredentialGrant, TypeUsage, TypeDone, TypeError,
+		TypeCredentialRequest, TypeCredentialGrant, TypeEgressRequest, TypeEgressResponse, TypeUsage, TypeDone, TypeError,
 		TypeTurnCancel, TypeTurnStart,
 		TypeBlobBegin, TypeBlobEnd, TypeBlobReceipt, TypePing, TypePong, TypeBundlePush,
 	} {
@@ -295,7 +306,7 @@ func TestVersionNegotiation(t *testing.T) {
 		want Compatibility
 	}{
 		{Version, Compatible},
-		{"1.7", CompatibleWithWarning},
+		{"1.99", CompatibleWithWarning},
 		{"2.0", Incompatible},
 		{"0.9", Incompatible},
 	}
@@ -330,5 +341,25 @@ func TestPermissionRequestWithoutTurnIsValid(t *testing.T) {
 	}
 	if _, err := Decode(raw, DirUp); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestEgressValidation(t *testing.T) {
+	big := make([]byte, MaxEgressBody+1)
+	bad := []Frame{
+		&EgressRequest{Secret: "s", Method: "GET", Path: "/"},
+		&EgressRequest{RequestID: "e", Method: "GET", Path: "/"},
+		&EgressRequest{RequestID: "e", Secret: "s", Method: "get", Path: "/"},
+		&EgressRequest{RequestID: "e", Secret: "s", Method: "GET", Path: "x"},
+		&EgressRequest{RequestID: "e", Secret: "s", Method: "POST", Path: "/", Body: big},
+		&EgressRequest{RequestID: "e", Secret: "s", Method: "GET", Path: "/", Attributed: true},
+		&EgressResponse{RequestID: "e"},
+		&EgressResponse{RequestID: "e", Status: 200, Error: &RemoteError{Code: "x"}},
+		&EgressResponse{RequestID: "e", Status: 200, Body: big},
+	}
+	for i, f := range bad {
+		if err := f.Validate(); err == nil {
+			t.Errorf("case %d (%T) validated", i, f)
+		}
 	}
 }

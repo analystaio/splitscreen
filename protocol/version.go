@@ -12,7 +12,7 @@ import (
 // mismatched versions in flight. Bump Major for any change that removes a
 // frame, removes a field, or changes the meaning of an existing field. Bump
 // Minor for additive changes (new frame types, new optional fields).
-const Version = "1.6"
+const Version = "1.7"
 
 // MinorTurnCancel is the first minor that understands turn.cancel. An older
 // runner drops the frame as unknown, so the gateway checks before offering to
@@ -28,6 +28,10 @@ const MinorBlobReceipt = 4
 // with the file. An older gateway ignores the field and uploads the file bare,
 // so the runner says where the text went rather than letting it vanish.
 const MinorBlobComment = 6
+
+// MinorEgress is the first minor whose gateway answers egress.request. A runner
+// offers its egress proxy to the harness only when its gateway is this new.
+const MinorEgress = 7
 
 // SemVer is a major.minor pair. The protocol deliberately has no patch
 // component: a change either affects the wire or it does not.

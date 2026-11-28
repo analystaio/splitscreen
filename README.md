@@ -303,6 +303,59 @@ mcp:
 A proxied server's `deny` list is enforced at the gateway, before the call
 leaves it.
 
+### API keys for the agent
+
+People often need to hand the agent an API key. Pasting it in chat leaves it in
+the channel's history, and a key the agent can read is a key a prompt injection
+can send elsewhere. The secrets broker avoids both: the agent asks, the person
+pastes the key into a one-time page, and the agent then **uses** it through its
+runner without ever **seeing** it. Design and threat model:
+[`docs/secrets-broker.md`](docs/secrets-broker.md).
+
+```yaml
+gateway:
+  vault:
+    key_secret: vault-key        # 32 random bytes, base64: head -c32 /dev/urandom | base64
+  intake:
+    listen: 127.0.0.1:8444       # the paste page, on its own listener
+    public_url: https://gateway.example.ts.net:8444
+    mode: tailnet                # or link-only
+people:                          # tailnet mode: chat user -> Tailscale login
+  U0123ABCD: { tailnet: alice@example.com }
+runners:
+  review:
+    egress: true                 # this runner's agent may use secrets
+    hardened: true               # see "Hardened runners"
+```
+
+The runner's bundle needs a `kind: surface` MCP server, which carries three
+tools:
+
+- `request_secret` sends the person who asked a private, single-use link
+  (15 minutes). The agent never sees the link or the value. When the key is
+  added, the thread says so.
+- `list_secrets` shows what the agent can use and how.
+- `revoke_secret` destroys a secret. Only its owner can.
+
+The agent calls `$SPLITSCREEN_EGRESS/s/<name>/<path>`. The runner forwards the
+request to the gateway, which checks the secret's policy, attaches the key, and
+calls `https://<host>/<path>`. The upstream response comes back with any echo of
+the key redacted. Bodies are limited to 512 KiB each way. Redirects are not
+followed. Cloud metadata addresses are never reachable.
+
+When adding a key, the person chooses who may use it:
+
+| Choice | Works on |
+|---|---|
+| Anyone who talks to the runner | Any runner with `egress: true`, while a turn is running |
+| Only when I ask | A **hardened** runner, and only in turns that person started |
+
+In `tailnet` mode the page sits behind `tailscale serve`
+(`tailscale serve --bg --https=8444 http://127.0.0.1:8444`), and the browser's
+Tailscale login must be the person the link was sent to. `link-only` trusts the
+link alone. It is single use, short-lived and sent privately, but anyone who
+sees it in that window can use it.
+
 ### Plugins
 
 Skills (and agents, commands, helper scripts) can come from a Claude Code
@@ -555,8 +608,11 @@ route before removing the runner.
 
 Runner fields: `display` (`name`, `icon`, `show_activity`), `host`, `cwd`, `harness`,
 `bundle`, `model`, `idle`, `max_concurrent`, `policy`, `token_secret`, `harness_secret`,
-`harness_env`, `billing`, `context_header`, `working_status`, and `wake`
-(`ec2_instance`, `region`).
+`harness_env`, `billing`, `context_header`, `working_status`, `wake`
+(`ec2_instance`, `region`), `egress` and `hardened`.
+Secrets broker: `gateway.vault` (`key_secret`), `gateway.intake` (`listen`,
+`public_url`, `mode`, `link_ttl`), `gateway.egress` (`timeout`, `deny_hosts`),
+and the top-level `people` map (see [API keys for the agent](#api-keys-for-the-agent)).
 Bundle fields: `extends`, `memory`, `skills`, `plugins` (`name@marketplace`),
 `mcp`, `strict_mcp` (default `true`). Marketplace fields: `repo`, `ref` (see [Plugins](#plugins)).
 See [`examples/splitscreen.yaml`](examples/splitscreen.yaml) and the field comments in `config/config.go`.
@@ -589,13 +645,41 @@ systemctl --user enable --now splitscreen-runner@staging
 systemctl --user enable --now splitscreen-runner@review   # same host, second tree
 ```
 
+### Hardened runners
+
+All sessions on a runner run as one Unix user. A thread id the agent reports
+can therefore be forged, and so can anything in its environment. A hardened
+runner learns which thread made a local request from the kernel instead: it
+finds the process that holds the client socket and walks up to a harness the
+runner started. That answer is only trustworthy if the agent cannot change the
+runner itself. At start, the runner checks:
+
+- it runs as a **system** unit with `User=` set to the agent's user, not as a
+  user unit the agent could override
+- its own binary and the harness binary are root-owned, and so are the
+  directories above them
+- `kernel.yama.ptrace_scope` is at least 1
+- the enrollment token reaches it on stdin from a root-only file, never in
+  argv, the environment, or a file the agent can read
+
+[`examples/systemd/splitscreen-runner-hardened@.service`](examples/systemd/splitscreen-runner-hardened@.service)
+sets this up. The runner logs any check that fails and reports the result to the
+gateway. A secret limited to its owner works only when the runner passes and the
+gateway config also says `hardened: true`. Both are needed, because neither
+alone can be trusted.
+
+Hardened is not isolation. Sessions still share one Unix user, so a session can
+plant code (a hook, a config file) that another person's later session runs,
+and that code is credited to that person. Hardening stops a forged request, not
+a planted one ([design §13.2](docs/secrets-broker.md#132-what-it-does-not-achieve)).
+
 ## Status
 
 The protocol, configuration, gateway, runner, Claude Code adapter, Slack
 surface, and read-only web view are implemented and tested.
 
-Not yet built: per-user OAuth for third-party credentials (service-account
-tokens work today), signed cloud instance-identity authentication as an
+Not yet built: per-user OAuth for third-party credentials (static API keys
+work today through the secrets broker), signed cloud instance-identity authentication as an
 alternative to enrollment tokens, and additional surface and harness adapters —
 both plug points exist, but only one implementation of each ships.
 

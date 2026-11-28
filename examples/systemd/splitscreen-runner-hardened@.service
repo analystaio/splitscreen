@@ -1,0 +1,48 @@
+# A runner its own agent cannot change (docs/secrets-broker.md §8.4). Needed
+# before a secret limited to its owner works on this runner; otherwise the
+# plain user unit (splitscreen-runner@.service) is simpler.
+#
+# A *system* unit that runs as the agent's unprivileged user, so the agent
+# cannot override how it starts (user units take drop-ins from that user's
+# home). Install once per runner, replacing AGENT with that user:
+#
+#   install -m644 splitscreen-runner-hardened@.service /etc/systemd/system/
+#   systemctl edit splitscreen-runner-hardened@staging   # set User=, Group=
+#   install -o root -g root -m600 token /etc/splitscreen/runner-staging.token
+#   systemctl enable --now splitscreen-runner-hardened@staging
+#
+# The runner checks the rest at start and logs what fails:
+#   - /usr/local/bin/splitscreen and the harness binary (claude) are root-owned
+#     and not writable by AGENT, nor are the directories above them
+#   - kernel.yama.ptrace_scope >= 1
+#   - the enrollment token is not readable by AGENT: systemd opens it as root
+#     and hands the runner the descriptor on stdin
+# Then set `hardened: true` for the runner in the gateway config.
+[Unit]
+Description=Splitscreen runner (%i, hardened)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=AGENT
+Group=AGENT
+EnvironmentFile=/etc/splitscreen/runner-%i.env
+StandardInput=file:/etc/splitscreen/runner-%i.token
+ExecStart=/usr/local/bin/splitscreen runner \
+  --name %i \
+  --gateway ${SPLITSCREEN_GATEWAY} \
+  --fingerprint ${SPLITSCREEN_GATEWAY_FINGERPRINT} \
+  --token-file - \
+  --cwd ${SPLITSCREEN_CWD} \
+  --idle ${SPLITSCREEN_IDLE}
+Restart=always
+RestartSec=5
+
+# Keep the runtime root on tmpfs, as for the user unit. The harness and its
+# helpers find the socket from SPLITSCREEN_SOCKET, which the runner sets.
+RuntimeDirectory=splitscreen-%i
+Environment=XDG_RUNTIME_DIR=/run/splitscreen-%i
+
+[Install]
+WantedBy=multi-user.target

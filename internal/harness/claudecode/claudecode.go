@@ -69,6 +69,18 @@ func buildArgs(cfg harness.SessionConfig) []string {
 	return args
 }
 
+// BinaryPath is the executable this adapter runs, as given (a bare name is
+// looked up on PATH).
+func (a *Adapter) BinaryPath() string {
+	if a.Binary == "" {
+		return "claude"
+	}
+	return a.Binary
+}
+
+// Process identifies the harness process.
+func (s *session) Process() (int, uint64) { return s.pid, s.start }
+
 // PermissionToolName is the tool the CLI is told to call for every permission
 // decision. Routing prompts through a tool rather than a shell hook is both
 // supported and language-agnostic, and it is what lets the gateway be the
@@ -112,6 +124,8 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.SessionConfig) (harness
 		cmd:    cmd,
 		stdin:  stdin,
 		events: make(chan harness.Event, 256),
+		pid:    cmd.Process.Pid,
+		start:  harness.ProcessStart(cmd.Process.Pid),
 	}
 	s.running.Store(true)
 
@@ -123,6 +137,8 @@ func (a *Adapter) Start(ctx context.Context, cfg harness.SessionConfig) (harness
 type session struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
+	pid   int
+	start uint64
 
 	mu        sync.Mutex
 	sessionID string

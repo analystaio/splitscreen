@@ -202,3 +202,37 @@ CREATE TABLE IF NOT EXISTS schedules (
 );
 CREATE INDEX IF NOT EXISTS idx_schedules_due ON schedules(state, next_run_at);
 CREATE INDEX IF NOT EXISTS idx_schedules_creator ON schedules(creator);
+
+-- Secrets broker (docs/secrets-broker.md). Values are AES-GCM ciphertext under
+-- a key that is not in this database; policy is JSON the gateway interprets.
+CREATE TABLE IF NOT EXISTS vault_secrets (
+    name         TEXT PRIMARY KEY,
+    owner        TEXT NOT NULL,
+    kind         TEXT NOT NULL,
+    ciphertext   BLOB NOT NULL,
+    nonce        BLOB NOT NULL,
+    key_id       TEXT NOT NULL,
+    policy       TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    last_used_at TEXT,
+    revoked_at   TEXT
+);
+
+-- One-time intake links. Only a hash of the link token is kept, so the table
+-- cannot be used to submit anything.
+CREATE TABLE IF NOT EXISTS vault_intakes (
+    token_hash   TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    request      TEXT NOT NULL,
+    surface      TEXT NOT NULL,
+    surface_user TEXT NOT NULL,
+    runner       TEXT NOT NULL,
+    thread_id    TEXT,
+    channel      TEXT NOT NULL,
+    thread_ts    TEXT,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT NOT NULL,
+    used_at      TEXT
+);

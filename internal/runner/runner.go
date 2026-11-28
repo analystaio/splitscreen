@@ -34,6 +34,10 @@ type Options struct {
 	Name    string
 	Gateway string // wss://host:port
 	Token   string
+	// TokenFile is where Token was read from, "" when it came from a flag or
+	// the environment. Hardened mode needs it to be a file the runner's own
+	// user can no longer open (hardened.go).
+	TokenFile string
 	// Fingerprint pins the gateway's self-signed certificate. Public CAs do not
 	// issue for private addresses, and a private CA is disproportionate for a
 	// small fleet.
@@ -91,6 +95,13 @@ type Runner struct {
 	// enough to send one.
 	gatewayMinor atomic.Int32
 	blobs        sync.Map // blob id -> *inboundBlob
+
+	// hardened is the result of the start-up self-check (hardened.go), and
+	// hardenedProblems what failed. Fixed for the life of the process.
+	hardened         bool
+	hardenedProblems []string
+	// egressURL is the loopback proxy's base URL (egress.go), "" until up.
+	egressURL atomic.Value
 
 	// plugins are the enabled plugins' directories for the current bundle.
 	plugins pluginSet
@@ -151,6 +162,13 @@ func (r *Runner) Run(ctx context.Context) error {
 		return err
 	}
 	defer r.ipc.close()
+
+	r.hardenedProblems = r.hardenedCheck()
+	r.hardened = len(r.hardenedProblems) == 0
+	if !r.hardened {
+		r.log.Info("runner is not hardened: secrets limited to their owner will not work here", "problems", r.hardenedProblems)
+	}
+	r.startEgress(ctx)
 
 	go r.sweepIdle(ctx)
 	go r.maintainActive(ctx)
@@ -219,9 +237,11 @@ func (r *Runner) connectOnce(ctx context.Context) error {
 		Host: protocol.Host{
 			ID: hostID(), OS: runtime.GOOS, Arch: runtime.GOARCH,
 		},
-		Harness:      protocol.HarnessInfo{Adapter: r.adapter.Name()},
-		Capabilities: []string{"files", "images", "permission-prompt-tool", "proxied-mcp"},
-		Instance:     r.instance,
+		Harness:          protocol.HarnessInfo{Adapter: r.adapter.Name()},
+		Capabilities:     []string{"files", "images", "permission-prompt-tool", "proxied-mcp", "egress"},
+		Instance:         r.instance,
+		Hardened:         r.hardened,
+		HardenedProblems: r.hardenedProblems,
 	}
 	// Tell the gateway what we already have. After a reboot this is empty even
 	// though the gateway may believe it pushed — the runtime root is tmpfs.
@@ -367,6 +387,8 @@ func (r *Runner) handleFrame(ctx context.Context, f protocol.Frame) {
 	case *protocol.PermissionResponse:
 		r.resolvePending(fr.RequestID, fr)
 	case *protocol.CredentialGrant:
+		r.resolvePending(fr.RequestID, fr)
+	case *protocol.EgressResponse:
 		r.resolvePending(fr.RequestID, fr)
 	case *protocol.MCPResponse:
 		r.resolvePending(fr.CallID, fr)

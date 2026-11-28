@@ -270,6 +270,9 @@ func (r *Runner) buildEnv(configDir, threadID string) []string {
 	if threadID != "" {
 		env = append(env, "SPLITSCREEN_THREAD="+threadID)
 	}
+	if u := r.egressEnv(); u != "" {
+		env = append(env, "SPLITSCREEN_EGRESS="+u)
+	}
 
 	// The harness credential is the one secret that must exist on the runner,
 	// because the agent process authenticates from here.
