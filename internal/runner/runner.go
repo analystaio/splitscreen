@@ -34,6 +34,10 @@ type Options struct {
 	Name    string
 	Gateway string // wss://host:port
 	Token   string
+	// TokenFile is where Token was read from, "" when it came from a flag or
+	// the environment. Hardened mode needs it to be a file the runner's own
+	// user can no longer open (hardened.go).
+	TokenFile string
 	// Fingerprint pins the gateway's self-signed certificate. Public CAs do not
 	// issue for private addresses, and a private CA is disproportionate for a
 	// small fleet.

@@ -49,6 +49,18 @@ func (r *Runner) hardenedCheck() []string {
 		}
 	}
 
+	// The enrollment token is the runner's identity to the gateway. If the
+	// agent can read it, it can run a runner of its own that claims anything.
+	// So it must arrive on a descriptor opened by someone else (systemd's
+	// StandardInput=file: on a root-only file, with --token-file -),
+	// never in argv or the environment, both of which the agent can read.
+	if r.opts.TokenFile == "" {
+		add("the enrollment token came from a flag or the environment, which the agent can read; pass it on stdin from a root-only file")
+	} else if f, err := os.Open(r.opts.TokenFile); err == nil {
+		f.Close()
+		add("the enrollment token %s is readable by the runner's user, so the agent can read it too; pass it on stdin from a root-only file", r.opts.TokenFile)
+	}
+
 	uid := os.Getuid()
 	if self, err := os.Executable(); err != nil {
 		add("cannot find the runner's own binary: %v", err)

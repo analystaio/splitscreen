@@ -1,6 +1,7 @@
 # Secrets broker: keys the agent can use but never read
 
-Status: **proposal**. Extends DESIGN.md §9 (Credentials) and §14 (Security model).
+Status: **phases 1–3 implemented** (§16 lists what v1 does differently from the
+text below). Extends DESIGN.md §9 (Credentials) and §14 (Security model).
 
 ## 1. Problem
 
@@ -313,6 +314,7 @@ policy to mean anything:
 | Runner binary and harness binary are root-owned, not writable by the agent user | The agent cannot swap the process that attributes requests |
 | Harness auto-update off; updates ship as a deploy step | Same reason |
 | `kernel.yama.ptrace_scope >= 1` | The agent cannot attach to its ancestors |
+| Enrollment token on stdin from a root-only file (`StandardInput=file:`, `--token-file -`) | With the token, the agent could run a runner of its own that claims to be hardened |
 | Runner refuses to start per-user brokering if any check fails, and says which | A misconfiguration fails closed and visibly |
 
 Outside hardened mode, the runner sends `attributed: false` on every request, and the
@@ -469,3 +471,27 @@ Each phase is one PR, and each is usable on its own.
    value" command. Rotation means re-entering the key. Confirm that this is acceptable.
 5. **HTTPS interception** for tools with hard-coded hosts (§2 non-goal). Worth it in a
    v2, given a runner-local CA, or do wrappers that accept a base URL always suffice?
+
+## 16. Implementation status (v1)
+
+Built: the vault, intake (`link-only` and `tailnet`), the egress proxy, policy
+(`hosts`, `users`, `runners`, `methods`, header or query injection), kernel
+attribution, the hardened self-check, and audit events.
+
+Where v1 differs from the text above:
+
+- **Bodies ride inside the control frame**, base64, capped at 512 KiB each way,
+  instead of on `blob.*` frames. Larger requests or responses are refused with
+  a clear error. Streaming responses (SSE) arrive whole, not as a stream.
+- **Discovery and revocation are surface tools** (`list_secrets`,
+  `revoke_secret`), not `splitscreen secrets` subcommands or slash commands.
+  Only a secret's owner can revoke it.
+- **Placeholders** (`{{secret:name}}` in a body) and **`expose`** are not built.
+  Neither is the **`access-proxy`** intake mode, or OAuth (§7.2).
+- **A secret is bound to the runner that asked for it.** Intake sets
+  `runners: [<that runner>]`. Widening it is an operator's change.
+- **Hardened mode also requires the enrollment token to be unreadable by the
+  agent** (§8.4 table). This was found while writing the hardened unit.
+- **Attribution covers the egress proxy only.** The existing helpers still
+  name their thread themselves. Moving them onto the same attribution remains
+  to do.
