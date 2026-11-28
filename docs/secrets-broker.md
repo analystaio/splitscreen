@@ -429,6 +429,16 @@ from chat:
   the gateway.
 - **Non-hardened runners** get no per-user binding (§8.4). That is stated in the UI, not
   hidden.
+- **Even hardened, sessions share a Unix user, and so share files.** An agent in
+  Bob's thread cannot forge a request as Alice's thread, but it can plant
+  something Alice's session will later run: a hook in a shared plugin, the
+  per-thread config directory, a script in a shared working tree. That code runs
+  inside Alice's harness tree and is correctly attributed to her. Hardened mode
+  turns "one `curl` with a forged thread id" into "persistence plus waiting for
+  the owner to start a turn". That is a real bar, but it is not a boundary. The
+  boundary is one Unix user per session, which is future work. Until then, treat
+  `users: owner` as protection against mistakes and casual misuse, and give
+  agents keys whose policy is narrow enough to tolerate that.
 
 ### 13.3 Threats considered
 

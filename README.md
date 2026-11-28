@@ -668,6 +668,11 @@ gateway. A secret limited to its owner works only when the runner passes and the
 gateway config also says `hardened: true`. Both are needed, because neither
 alone can be trusted.
 
+Hardened is not isolation. Sessions still share one Unix user, so a session can
+plant code (a hook, a config file) that another person's later session runs,
+and that code is credited to that person. Hardening stops a forged request, not
+a planted one ([design §13.2](docs/secrets-broker.md#132-what-it-does-not-achieve)).
+
 ## Status
 
 The protocol, configuration, gateway, runner, Claude Code adapter, Slack
