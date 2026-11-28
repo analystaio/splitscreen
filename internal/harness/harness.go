@@ -142,6 +142,20 @@ type Session interface {
 	Running() bool
 }
 
+// ProcessSession is implemented by sessions backed by a local process. The
+// runner uses it to recognise its own harness processes when it traces where
+// a local request came from: Start is the kernel's start time for PID, so a
+// recycled PID is not mistaken for the harness.
+type ProcessSession interface {
+	Process() (pid int, start uint64)
+}
+
+// BinaryAdapter reports the executable an adapter launches, so the runner can
+// check that its agent cannot replace it.
+type BinaryAdapter interface {
+	BinaryPath() string
+}
+
 // Interrupter is implemented by sessions that can stop the turn in flight and
 // stay alive — what Esc does in a terminal. The turn then ends with an
 // EventDone marked Interrupted. Optional: a runner whose session lacks it ends
