@@ -107,6 +107,12 @@ func (g *Gateway) runnerHardened(runner string) bool {
 	return ok && c.hello != nil && c.hello.Hardened
 }
 
+// runnerEgress reports whether a runner may use vault secrets at all.
+func (g *Gateway) runnerEgress(runner string) bool {
+	rc, ok := g.runnerConfig(runner)
+	return ok && rc.Egress
+}
+
 // runnerHasLiveTurn reports whether any turn is running on a runner. A secret
 // open to anyone still only works while someone is using the runner.
 func (g *Gateway) runnerHasLiveTurn(runner string) bool {
@@ -151,6 +157,10 @@ func (g *Gateway) requestSecret(ctx context.Context, runner string, turn *turnCo
 		return nil, errors.New("request_secret: a scheduled run has nobody to hand a key over")
 	}
 	cfg := g.cfg.Load()
+	if !g.runnerEgress(runner) {
+		// A key this runner cannot use would only sit in the vault.
+		return nil, fmt.Errorf("request_secret: runner %q cannot use secrets (egress is off in the gateway config)", runner)
+	}
 	if !cfg.Gateway.Intake.Enabled() {
 		return nil, errors.New("request_secret: this gateway has no intake page configured (gateway.intake)")
 	}
