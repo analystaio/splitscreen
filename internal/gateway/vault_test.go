@@ -443,3 +443,28 @@ func TestEgressRedactsCompressedResponses(t *testing.T) {
 		t.Fatalf("body %q", resp.Body)
 	}
 }
+
+// A runner without egress cannot use a key, so it must not be able to ask for
+// one, and a link sent before egress was turned off must not store one.
+func TestRequestSecretNeedsEgress(t *testing.T) {
+	vh := newVaultHarness(t)
+	tok := vh.requestLink(t, memberTurn(), `{"name":"vendor","hosts":["api.vendor.test"]}`)
+	vh.gw.cfg.Load().Runners["alpha"].Egress = false
+
+	out, err := vh.tool(t, memberTurn(), requestSecretTool, `{"name":"other","hosts":["api.vendor.test"]}`)
+	if err == nil || !strings.Contains(err.Error(), "egress is off") {
+		t.Fatalf("request_secret with egress off: %q, %v", out, err)
+	}
+	form := url.Values{"value": {"k"}, "hosts": {"api.vendor.test"}, "users": {"any"}, "header": {"Authorization"}, "format": {"Bearer {value}"}}
+	if code, _ := vh.submit(t, tok, form, nil); code != http.StatusGone {
+		t.Fatalf("submit with egress off: %d", code)
+	}
+	if _, err := vh.st.VaultSecret("vendor"); err == nil {
+		t.Fatal("a key was stored for a runner that cannot use it")
+	}
+	// Turning egress back on makes the same link work again: it was not burned.
+	vh.gw.cfg.Load().Runners["alpha"].Egress = true
+	if code, body := vh.submit(t, tok, form, nil); code != 200 {
+		t.Fatalf("submit after egress back on: %d %s", code, body)
+	}
+}

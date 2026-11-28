@@ -173,6 +173,10 @@ func (g *Gateway) intakeForm(w http.ResponseWriter, r *http.Request) {
 		g.renderIntake(w, http.StatusGone, intakeView{Error: why})
 		return
 	}
+	if !g.runnerEgress(in.Runner) {
+		g.renderIntake(w, http.StatusGone, intakeView{Name: in.Name, Error: "The agent that asked can no longer use secrets, so nothing would be stored. Ask its operator."})
+		return
+	}
 	cfg := g.cfg.Load()
 	if why := g.intakeIdentity(cfg, r, in); why != "" {
 		g.renderIntake(w, http.StatusForbidden, intakeView{Name: in.Name, Error: why})
@@ -203,6 +207,10 @@ func (g *Gateway) intakeSubmit(w http.ResponseWriter, r *http.Request) {
 	in, why := g.intakeLookup(r)
 	if why != "" {
 		g.renderIntake(w, http.StatusGone, intakeView{Error: why})
+		return
+	}
+	if !g.runnerEgress(in.Runner) {
+		g.renderIntake(w, http.StatusGone, intakeView{Name: in.Name, Error: "The agent that asked can no longer use secrets, so nothing would be stored. Ask its operator."})
 		return
 	}
 	cfg := g.cfg.Load()
